@@ -1,18 +1,23 @@
 /**
- * learnSpark app shell: terminal, levels, goals, persistence.
+ * learnSpark app shell: terminal, levels, goals, celebrate + share, persistence.
  */
 
 import { execute, createState } from "../engine/commands.js";
 import { run } from "../engine/execute.js";
-import { SEQUENCES, LEVELS, allLevels, checkGoals } from "../game/levels.js";
+import { SEQUENCES, LEVELS, allLevels, checkGoals, getNextLevel } from "../game/levels.js";
 import { renderDag, renderPreview } from "./viz.js";
-
-const STORE_KEY = "learnspark.progress.v1";
+import { TerminalView } from "./terminal.js";
+import {
+  loadProgress,
+  saveProgress,
+  summarizeCurriculum,
+  resumeLine,
+} from "./progress.js";
+import { buildShareTargets, shareWithClipboard, LIVE_URL } from "./share.js";
+import { launchConfetti, playFanfare } from "./confetti.js";
 
 const els = {
   rail: document.getElementById("level-rail"),
-  termOut: document.getElementById("term-out"),
-  termIn: document.getElementById("term-in"),
   goals: document.getElementById("goals"),
   parts: document.getElementById("parts"),
   partMeta: document.getElementById("part-meta"),
@@ -34,71 +39,48 @@ const els = {
   modalBody: document.getElementById("modal-body"),
   modalPrimary: document.getElementById("modal-primary"),
   modalSecondary: document.getElementById("modal-secondary"),
+  termRoot: document.getElementById("term-root"),
 };
 
-/** @type {{ mode: 'sandbox'|'level', levelId: string|null, state: any, done: Record<string, boolean>, historyLines: string[] }} */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 const game = {
   mode: "sandbox",
   levelId: null,
   state: createState(),
   done: loadProgress(),
-  historyLines: [],
+  offered: false,
 };
 
-/**
- * Load solved level ids from localStorage.
- *
- * @returns {Record<string, boolean>}
- */
-function loadProgress() {
-  try {
-    return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {};
-  } catch (e) {
-    return {};
-  }
-}
+const terminal = new TerminalView(els.termRoot, function (line) {
+  submit(line);
+});
 
 /**
- * Persist solved level ids.
- *
- * @returns {void}
- */
-function saveProgress() {
-  localStorage.setItem(STORE_KEY, JSON.stringify(game.done));
-}
-
-/**
- * Append a terminal line.
- *
  * @param {string} text
  * @param {string} [cls]
- * @returns {void}
  */
 function print(text, cls) {
-  const line = document.createElement("div");
-  line.className = "line " + (cls || "info");
-  line.textContent = text;
-  els.termOut.appendChild(line);
-  els.termOut.scrollTop = els.termOut.scrollHeight;
+  terminal.push(cls || "info", text);
 }
 
 /**
- * Render multi-line info block.
- *
  * @param {string} text
  * @param {string} [cls]
- * @returns {void}
  */
 function printBlock(text, cls) {
-  const parts = String(text).split("\n");
-  for (let i = 0; i < parts.length; i += 1) print(parts[i], cls);
+  String(text).split("\n").forEach(function (part) {
+    print(part, cls);
+  });
 }
 
 /**
- * Render a result table into the terminal.
- *
  * @param {any} out
- * @returns {void}
  */
 function printTable(out) {
   if (out.text) print(out.text, "info");
@@ -107,18 +89,18 @@ function printTable(out) {
   if (!cols.length) return;
   print(cols.join(" | "), "sys");
   for (let i = 0; i < rows.length; i += 1) {
-    const vals = cols.map(function (c) { return String(rows[i][c]); });
-    print(vals.join(" | "), "info");
+    print(
+      cols.map(function (c) { return String(rows[i][c]); }).join(" | "),
+      "info"
+    );
   }
 }
 
 /**
- * Refresh all panels from game state.
- *
  * @param {{ animate?: boolean }} [opts]
- * @returns {void}
  */
-function render(opts = {}) {
+function render(opts) {
+  opts = opts || {};
   renderRail();
   renderChrome();
   renderGoals();
@@ -133,20 +115,45 @@ function render(opts = {}) {
   if (game.mode === "level" && game.levelId) {
     const level = LEVELS[game.levelId];
     const res = checkGoals(level, game.state);
-    if (res.met && !game.done[level.id]) {
-      game.done[level.id] = true;
-      saveProgress();
-      showWin(level);
-      render();
+    if (res.met && !(game.done[level.id] && game.done[level.id].solved)) {
+      markSolved(level, (game.state.commandsRun || []).length);
+      showCelebrate(level);
     }
+    terminal.setHint(res.met ? null : suggestNext(level, res));
+  } else {
+    terminal.setHint(null);
   }
 }
 
 /**
- * Render left level rail.
- *
- * @returns {void}
+ * @param {any} level
+ * @param {number} used
  */
+function markSolved(level, used) {
+  const prev = game.done[level.id] || {};
+  const best =
+    prev.bestCommands === undefined ? used : Math.min(prev.bestCommands, used);
+  game.done[level.id] = { solved: true, bestCommands: best };
+  saveProgress(game.done);
+}
+
+/**
+ * @param {any} level
+ * @param {any} res
+ * @returns {string|null}
+ */
+function suggestNext(level, res) {
+  for (let i = 0; i < res.checks.length; i += 1) {
+    if (!res.checks[i].done) {
+      const g = (level.goals || [])[i];
+      if (g && g.head) return String(g.head);
+      if (g && g.op) return String(g.op);
+      return level.hints && level.hints[Math.min(game.state.hintIndex || 0, level.hints.length - 1)];
+    }
+  }
+  return (level.hints && level.hints[0]) || null;
+}
+
 function renderRail() {
   els.rail.innerHTML = "";
   for (let s = 0; s < SEQUENCES.length; s += 1) {
@@ -158,42 +165,45 @@ function renderRail() {
     for (let i = 0; i < seq.levels.length; i += 1) {
       const id = seq.levels[i];
       const level = LEVELS[id];
+      const solved = Boolean(game.done[id] && game.done[id].solved);
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "level-item" +
+      btn.className =
+        "level-item" +
         (game.mode === "level" && game.levelId === id ? " active" : "") +
-        (game.done[id] ? " done" : "");
+        (solved ? " done" : "");
       const dot = document.createElement("span");
       dot.className = "dot";
-      dot.textContent = game.done[id] ? "●" : "○";
+      dot.textContent = solved ? "●" : "○";
       btn.appendChild(dot);
       btn.appendChild(document.createTextNode(level.title));
       const meta = document.createElement("span");
       meta.className = "meta";
-      meta.textContent = "diff " + level.difficulty;
+      const best = game.done[id] && game.done[id].bestCommands;
+      meta.textContent =
+        "diff " +
+        level.difficulty +
+        (best !== undefined ? " · par " + best + "/" + (level.commandsAllowed || "?") : "");
       btn.appendChild(meta);
-      btn.addEventListener("click", function () { openLevel(id); });
+      btn.addEventListener("click", function () {
+        openLevel(id);
+      });
       els.rail.appendChild(btn);
     }
   }
 }
 
-/**
- * Render top chrome / right cards.
- *
- * @returns {void}
- */
 function renderChrome() {
-  const total = allLevels().length;
-  const doneCount = Object.keys(game.done).filter(function (k) { return game.done[k]; }).length;
-  els.progress.textContent = doneCount + "/" + total + " levels";
+  const summary = summarizeCurriculum(game.done);
+  els.progress.textContent = summary.solvedCount + "/" + summary.total + " levels";
 
   if (game.mode === "sandbox") {
     els.modePill.textContent = "SANDBOX";
     els.modePill.classList.add("on");
     els.levelTitle.textContent = "free play";
     els.cardTitle.textContent = "Sandbox";
-    els.cardBody.textContent = "Play freely. Tables: sales, users, products, logs.\n\nload sales\nfilter amount > 100\nexplain\nshow";
+    els.cardBody.textContent =
+      "Play freely. Tables: sales, users, products, logs.\n\nload sales\nfilter amount > 100\nexplain\nshow\n\n↑↓ history · Tab word complete";
   } else {
     const level = LEVELS[game.levelId];
     els.modePill.textContent = "LEVEL";
@@ -204,15 +214,11 @@ function renderChrome() {
   }
 }
 
-/**
- * Render goal checklist.
- *
- * @returns {void}
- */
 function renderGoals() {
   els.goals.innerHTML = "";
   if (game.mode !== "level" || !game.levelId) {
-    els.goals.innerHTML = '<div class="line info">Sandbox has no goals. Open a level from the left rail.</div>';
+    els.goals.innerHTML =
+      '<div class="line info">Sandbox has no goals. Open a level from the left rail.</div>';
     return;
   }
   const level = LEVELS[game.levelId];
@@ -220,65 +226,65 @@ function renderGoals() {
   for (let i = 0; i < res.checks.length; i += 1) {
     const c = res.checks[i];
     const row = document.createElement("div");
-    row.className = "goal" + (c.done ? " done" : "");
-    row.innerHTML = '<span class="mark">' + (c.done ? "✓" : "·") + "</span><span>" +
-      escapeHtml(c.label) + '<span class="detail">' + escapeHtml(c.detail) + "</span></span>";
+    row.className =
+      "goal" + (c.done ? " done" : "") + (c.active ? " goal-active neon" : "");
+    row.innerHTML =
+      '<span class="mark">' +
+      (c.done ? "✓" : "→") +
+      "</span><span>" +
+      escapeHtml(c.label) +
+      '<span class="detail">' +
+      escapeHtml(c.detail) +
+      "</span></span>";
     els.goals.appendChild(row);
   }
+  const used = (game.state.commandsRun || []).length;
   const golf = document.createElement("div");
   golf.className = "goal";
-  golf.innerHTML = '<span class="mark">#</span><span>command golf<span class="detail">' +
-    (game.state.commandsRun || []).length + " used" +
-    (level.commandsAllowed ? " / par " + level.commandsAllowed : "") + "</span></span>";
+  golf.innerHTML =
+    '<span class="mark">#</span><span>command golf<span class="detail">' +
+    used +
+    " used" +
+    (level.commandsAllowed ? " / par " + level.commandsAllowed : "") +
+    "</span></span>";
   els.goals.appendChild(golf);
 }
 
 /**
- * Escape HTML text.
- *
- * @param {string} s
- * @returns {string}
- */
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-/**
- * Submit one command line.
- *
  * @param {string} raw
- * @returns {void}
  */
 function submit(raw) {
-  const line = String(raw || "").trim();
-  if (!line) return;
-  print("spark> " + line, "cmd");
-  game.historyLines.push(line);
+  const line = String(raw || "");
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  terminal.pushHistory(trimmed);
+  print("spark> " + trimmed, "cmd");
 
-  if (line.toLowerCase() === "next") {
+  const lower = trimmed.toLowerCase();
+  if (lower === "next") {
     goNextLevel();
+    terminal.focus();
     return;
   }
-  if (line.toLowerCase() === "levels") {
+  if (lower === "levels") {
     openLevelsModal();
+    terminal.focus();
     return;
   }
-  if (line.toLowerCase() === "sandbox") {
+  if (lower === "sandbox") {
     openSandbox();
+    terminal.focus();
     return;
   }
 
   const ctx = { level: game.levelId ? LEVELS[game.levelId] : null };
-  const result = execute(game.state, line, ctx);
+  const result = execute(game.state, trimmed, ctx);
   game.state = result.state;
 
   for (let i = 0; i < result.outputs.length; i += 1) {
     const out = result.outputs[i];
     if (out.kind === "clear") {
-      els.termOut.innerHTML = "";
+      terminal.clear();
     } else if (out.kind === "table") {
       printTable(out);
     } else if (out.kind === "plan") {
@@ -289,56 +295,63 @@ function submit(raw) {
   }
 
   render({ animate: result.kind === "action" && result.ok });
+  // Keep caret in the box after every command.
+  terminal.focus();
 }
 
 /**
- * Open a level (fresh state).
- *
  * @param {string} id
- * @returns {void}
  */
 function openLevel(id) {
   game.mode = "level";
   game.levelId = id;
   game.state = createState();
+  game.offered = false;
   const level = LEVELS[id];
-  els.termOut.innerHTML = "";
+  terminal.clear();
   print("— level: " + level.title + " —", "sys");
   printBlock(level.intro, "info");
   print("Goal: " + level.goalText, "success");
-  print("Type hint if stuck. type next when solved.", "info");
+  if (level.learn && level.learn.length) {
+    print("You will learn:", "sys");
+    level.learn.forEach(function (l) {
+      print("  • " + l, "info");
+    });
+  }
+  print("Type hint if stuck. Type next when solved. ↑↓ history, Tab completes words.", "info");
   closeModal();
   render();
-  els.termIn.focus();
+  terminal.focus();
 }
 
-/**
- * Switch to sandbox.
- *
- * @returns {void}
- */
 function openSandbox() {
   game.mode = "sandbox";
   game.levelId = null;
   game.state = createState();
-  els.termOut.innerHTML = "";
+  game.offered = false;
+  terminal.clear();
   print("Sandbox mode. Tables: sales, users, products, logs.", "sys");
   print("Try: load sales / filter amount > 100 / show", "info");
+  const summary = summarizeCurriculum(game.done);
+  if (summary.solvedCount) printBlock(resumeLine(summary), "info");
   closeModal();
   render();
-  els.termIn.focus();
+  terminal.focus();
 }
 
-/**
- * Advance to the next unfinished level.
- *
- * @returns {void}
- */
 function goNextLevel() {
   const list = allLevels();
   for (let i = 0; i < list.length; i += 1) {
-    if (!game.done[list[i].id]) {
+    const st = game.done[list[i].id];
+    if (!(st && st.solved)) {
       openLevel(list[i].id);
+      return;
+    }
+  }
+  if (game.levelId) {
+    const next = getNextLevel(game.levelId);
+    if (next) {
+      openLevel(next.id);
       return;
     }
   }
@@ -347,14 +360,15 @@ function goNextLevel() {
 }
 
 /**
- * Modal helper.
- *
- * @param {{ title: string, body: string, primary: string, secondary?: string, onPrimary?: () => void, win?: boolean }} opts
- * @returns {void}
+ * @param {{ title: string, body: string, primary: string, secondary?: string, onPrimary?: () => void, onSecondary?: () => void, win?: boolean, bodyHtml?: string }} opts
  */
 function showModal(opts) {
   els.modalTitle.textContent = opts.title;
-  els.modalBody.textContent = opts.body;
+  if (opts.bodyHtml) {
+    els.modalBody.innerHTML = opts.bodyHtml;
+  } else {
+    els.modalBody.textContent = opts.body;
+  }
   els.modalPrimary.textContent = opts.primary;
   els.modalSecondary.textContent = opts.secondary || "Close";
   els.modalBox.classList.toggle("win", Boolean(opts.win));
@@ -363,65 +377,192 @@ function showModal(opts) {
     closeModal();
     if (opts.onPrimary) opts.onPrimary();
   };
-  els.modalSecondary.onclick = closeModal;
+  els.modalSecondary.onclick = function () {
+    closeModal();
+    if (opts.onSecondary) opts.onSecondary();
+    terminal.focus();
+  };
 }
 
-/**
- * Close modal.
- *
- * @returns {void}
- */
 function closeModal() {
   els.modal.classList.remove("open");
   els.modalBox.classList.remove("win");
+  game.offered = false;
+  terminal.focus();
 }
 
+const CHEERS = [
+  "Clean run. The DAG tells the truth.",
+  "That is how stages actually split.",
+  "Nice — lazy plan, sharp action.",
+  "Partition strip updated. Keep going.",
+];
+
 /**
- * Win dialog with golf score.
+ * Celebrate modal with curriculum share (LinkedIn / X / Facebook / copy).
  *
  * @param {any} level
- * @returns {void}
  */
-function showWin(level) {
+function showCelebrate(level) {
+  if (game.offered) return;
+  game.offered = true;
+
   const used = (game.state.commandsRun || []).length;
   const par = level.commandsAllowed || used;
+  const curriculum = summarizeCurriculum(game.done);
+  const share = buildShareTargets({
+    levelName: level.title,
+    levelId: level.id,
+    commands: used,
+    par: par,
+    curriculum: curriculum,
+  });
+  const next = getNextLevel(level.id);
+  const underPar = used <= par;
+  const golfLine =
+    "**" +
+    used +
+    "** command" +
+    (used === 1 ? "" : "s") +
+    ". Ideal is " +
+    par +
+    (underPar ? " — on par or better." : ". Still counts — you got there.");
+  const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
+  const learnedPreview = curriculum.learned
+    .map(function (l) {
+      return "<li>" + escapeHtml(l.seriesTitle) + ": " + escapeHtml(l.name) + "</li>";
+    })
+    .join("");
+
+  const bodyHtml = [
+    '<div class="celebrate" aria-live="polite">',
+    '  <div class="celebrate-visual" aria-hidden="true"><div class="celebrate-ring"></div><div class="celebrate-star">★</div></div>',
+    '  <div class="celebrate-badge">LEVEL CLEARED</div>',
+    '  <h3 class="celebrate-title">' + escapeHtml(level.title) + "</h3>",
+    '  <p class="celebrate-sub">' +
+      escapeHtml(String(level.sequence || "").toUpperCase()) +
+      ' · <code>' +
+      escapeHtml(level.id) +
+      "</code></p>",
+    '  <p class="celebrate-cheer">' + escapeHtml(cheer) + "</p>",
+    '  <div class="celebrate-stats"><p>' + golfLine + "</p></div>",
+    '  <div class="celebrate-progress">',
+    '    <div class="prog-track"><div class="prog-fill" style="width:' + curriculum.percent + '%"></div></div>',
+    '    <div class="par-note">' +
+      curriculum.solvedCount +
+      " / " +
+      curriculum.total +
+      " levels solved · progress saved in this browser</div>",
+    "  </div>",
+    '  <div class="share-block">',
+    '    <div class="share-title">Share what you learned (with your curriculum)</div>',
+    '    <div class="learned-preview"><div class="par-note">Included in the post:</div><ul>' +
+      (learnedPreview || "<li>Solve more levels to grow the list</li>") +
+      "</ul></div>",
+    '    <div class="share-row" role="group" aria-label="Share">',
+    '      <button type="button" class="share-btn linkedin" data-share="linkedin">LinkedIn</button>',
+    '      <button type="button" class="share-btn x" data-share="x">X / Twitter</button>',
+    '      <button type="button" class="share-btn facebook" data-share="facebook">Facebook</button>',
+    '      <button type="button" class="share-btn copy" data-share="copy">Copy post</button>',
+    "    </div>",
+    '    <div class="share-status" data-share-status hidden></div>',
+    "  </div>",
+    '  <div class="celebrate-next">' +
+      (next
+        ? "Next up: <strong>" + escapeHtml(next.title) + "</strong> (" + escapeHtml(next.id) + ")"
+        : "You cleared the full curriculum.") +
+      "</div>",
+    "</div>",
+  ].join("\n");
+
   print("LEVEL SOLVED: " + level.title + "  (" + used + " commands, par " + par + ")", "success");
+
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  const confetti = launchConfetti(4800);
+  playFanfare();
+
+  const actions = [
+    {
+      label: "Stay here",
+      onPrimary: function () {
+        game.offered = false;
+        terminal.focus();
+      },
+    },
+    {
+      label: next ? "Next: " + next.title : "Browse levels",
+      onSecondary: function () {
+        game.offered = false;
+        if (next) openLevel(next.id);
+        else openLevelsModal();
+      },
+    },
+  ];
+
+  // primary = stay (celebrate), secondary = next — map to modal buttons
   showModal({
-    title: "Level solved — " + level.title,
-    body: level.goalText + "\n\nCommands used: " + used + "\nPar: " + par +
-      (used <= par ? "\nOn par or better." : "\nOver par — try a tighter sequence."),
-    primary: "Next level",
-    secondary: "Stay",
+    title: "Level complete — " + level.title,
+    bodyHtml: bodyHtml,
     win: true,
-    onPrimary: goNextLevel,
+    primary: actions[0].label,
+    secondary: actions[1].label,
+    onPrimary: function () {
+      confetti && confetti.stop();
+      actions[0].onPrimary();
+    },
+    onSecondary: function () {
+      confetti && confetti.stop();
+      actions[1].onSecondary();
+    },
+  });
+
+  els.modalBox.classList.add("modal-celebrate");
+
+  els.modalBody.querySelectorAll("[data-share]").forEach(function (btn) {
+    btn.addEventListener("click", async function (ev) {
+      ev.preventDefault();
+      const kind = btn.getAttribute("data-share") || "copy";
+      const status = els.modalBody.querySelector("[data-share-status]");
+      const result = await shareWithClipboard(kind, share);
+      if (!status) return;
+      status.hidden = false;
+      if (kind === "copy") {
+        status.textContent = result.copied
+          ? "Post copied to clipboard."
+          : "Copy failed — select the text above.";
+        return;
+      }
+      status.textContent = result.copied
+        ? "Share window opened. Text also copied (networks often drop prefilled posts)."
+        : "Share window opened.";
+    });
   });
 }
 
-/**
- * Levels browser modal.
- *
- * @returns {void}
- */
 function openLevelsModal() {
   const list = allLevels();
-  const lines = [];
-  for (let i = 0; i < list.length; i += 1) {
-    const lv = list[i];
-    const mark = game.done[lv.id] ? "[x]" : "[ ]";
-    lines.push(mark + " " + lv.id + " — " + lv.title + "  (par " + (lv.commandsAllowed || "?") + ")");
-  }
+  const lines = list.map(function (lv) {
+    const st = game.done[lv.id];
+    const mark = st && st.solved ? "[x]" : "[ ]";
+    const best = st && st.bestCommands !== undefined ? " best " + st.bestCommands : "";
+    return mark + " " + lv.id + " — " + lv.title + "  (par " + (lv.commandsAllowed || "?") + ")" + best;
+  });
+  const summary = summarizeCurriculum(game.done);
   showModal({
     title: "Levels",
-    body: lines.join("\n"),
+    body:
+      lines.join("\n") +
+      "\n\n" +
+      summary.solvedCount +
+      "/" +
+      summary.total +
+      " solved (" +
+      summary.percent +
+      "%). Progress saved in this browser.",
     primary: "OK",
   });
 }
 
-/**
- * Boot UI bindings.
- *
- * @returns {void}
- */
 function boot() {
   els.cmdHelp.textContent = [
     "load sales | users | products | logs",
@@ -431,60 +572,55 @@ function boot() {
     "cache | unpersist | show | count | collect",
     "schema | columns | explain | write | sparksql ...",
     "levels | goal | hint | undo | reset | clear | next",
+    "",
+    "↑↓ history · Tab word complete · Esc clear",
   ].join("\n");
-
-  els.termIn.addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter") {
-      const v = els.termIn.value;
-      els.termIn.value = "";
-      submit(v);
-    }
-  });
 
   document.getElementById("btn-levels").addEventListener("click", openLevelsModal);
   document.getElementById("btn-sandbox").addEventListener("click", openSandbox);
   document.getElementById("btn-reset").addEventListener("click", function () {
     submit("reset");
+    terminal.focus();
   });
 
-  // URL params: ?level=id&command=a;b
   const params = new URLSearchParams(window.location.search);
-  if (params.get("NODEMO") !== "1" && !params.get("command")) {
-    showModal({
-      title: "learnSpark",
-      body: [
-        "Interactive Apache Spark visualization and tutorial.",
-        "Modeled on LearnGitBranching: sandbox + levels + command golf.",
-        "",
-        "The DAG shows lazy plans and stage boundaries (shuffles).",
-        "Partitions show how rows sit on executors.",
-        "",
-        "Start with a level, or drop into sandbox.",
-      ].join("\n"),
-      primary: "Start intro level",
-      secondary: "Sandbox",
-      onPrimary: function () { openLevel("welcome"); },
-    });
-    els.modalSecondary.onclick = function () {
-      closeModal();
-      openSandbox();
-    };
-  }
-
   const levelParam = params.get("level");
+  const cmdParam = params.get("command");
+  const noDemo = params.get("NODEMO") === "1";
+
   if (levelParam && LEVELS[levelParam]) {
     openLevel(levelParam);
-  } else if (params.get("NODEMO") === "1" || params.get("command")) {
+  } else if (noDemo || cmdParam) {
     openSandbox();
   } else {
-    // stay in modal until choice
+    const summary = summarizeCurriculum(game.done);
+    const resume = summary.solvedCount ? resumeLine(summary) : null;
+    showModal({
+      title: "learnSpark",
+      bodyHtml:
+        "<p>Interactive Apache Spark visualization and tutorial.</p>" +
+        "<p>The Job DAG shows lazy plans and stage boundaries (shuffles). Partitions show how rows sit on executors.</p>" +
+        (resume ? "<p class='par-note'>" + escapeHtml(resume).replace(/\n/g, "<br/>") + "</p>" : "") +
+        "<p>Start with a level, or drop into sandbox.</p>",
+      primary: summary.next ? "Continue: " + summary.next.name : "Start intro level",
+      secondary: "Sandbox",
+      onPrimary: function () {
+        if (summary.next) openLevel(summary.next.id);
+        else openLevel("welcome");
+      },
+      onSecondary: function () {
+        openSandbox();
+      },
+    });
     render();
+    terminal.focus();
   }
 
-  const cmdParam = params.get("command");
   if (cmdParam) {
-    const parts = cmdParam.split(";");
-    for (let i = 0; i < parts.length; i += 1) submit(parts[i]);
+    cmdParam.split(";").forEach(function (part) {
+      submit(part);
+    });
+    terminal.focus();
   }
 }
 

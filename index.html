@@ -47,9 +47,9 @@
     <aside class="right" id="right-rail">
       <div class="card">
         <h3 id="card-title">Sandbox</h3>
-        <p id="card-body">Type commands below. Try <code>load sales</code> then <code>show</code>.</p>
+        <p id="card-body">Type commands below.</p>
       </div>
-      <div class="card">
+      <div class="card goals-card">
         <h3>Goals</h3>
         <div id="goals"></div>
       </div>
@@ -68,13 +68,7 @@
       </div>
     </aside>
 
-    <section class="term">
-      <div id="term-out"></div>
-      <div class="term-input-row">
-        <span class="prompt">spark&gt;</span>
-        <input id="term-in" autocomplete="off" spellcheck="false" placeholder="load sales" />
-      </div>
-    </section>
+    <section class="term" id="term-root"></section>
   </div>
 
   <div class="modal-backdrop" id="modal">

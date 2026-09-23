@@ -1,5 +1,5 @@
 /**
- * Level sequences and goal predicates for learnSpark.
+ * Level sequences, teaching copy, and goal predicates.
  *
  * Goal types:
  *  - command: at least one command whose head matches
@@ -10,7 +10,6 @@
  *  - actionRan: at least N actions executed
  *  - partitions: current partitions equal value
  *  - stages: last run has at least N stages
- *  - notLazierThan: command golf soft cap (informational)
  */
 
 export const SEQUENCES = [
@@ -60,16 +59,22 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Load the sales table and show its rows.",
     intro: [
-      "LearnGitBranching taught git with a living tree.",
-      "learnSpark teaches Apache Spark with a living DAG and partitions.",
-      "Tables are tiny on purpose. Commands are a teaching subset.",
+      "Spark is a distributed data engine. Your code builds a *plan*; a cluster of executors later turns that plan into work on *partitions* of data.",
+      "",
+      "This sandbox shows three surfaces at once:",
+      "  1. the Job DAG (logical plan and stages)",
+      "  2. partition buckets (where rows live)",
+      "  3. a terminal (commands you would type in a notebook shell)",
+      "",
+      "Tables here are tiny on purpose so every row is inspectable.",
       "",
       "Your job: load sales, then show it.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "show",
+    learn: [
+      "Spark work starts from a named table/source",
+      "show is an action that materializes rows",
     ],
+    hints: ["load sales", "show"],
     commandsAllowed: 4,
     goals: [
       { type: "command", label: "Run load sales", head: "load" },
@@ -84,14 +89,18 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Keep only sales with amount > 100, then show.",
     intro: [
-      "filter is a transformation. It does not run until an action.",
-      "Try filtering high-value orders.",
+      "filter is a *transformation*. It does not scan data when you type it — it only extends the plan.",
+      "Nothing is computed until an action (show, count, collect, write) runs.",
+      "",
+      "Why this matters: real Spark jobs chain dozens of transforms. If each one executed immediately you would pay cluster cost on every keystroke. Lazy plans let the optimizer fuse narrow ops into one pass.",
+      "",
+      "Watch the DAG grow a filter node, then force execution with show.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "filter amount > 100",
-      "show",
+    learn: [
+      "filter is lazy — plan only",
+      "amount > 100 keeps high-value rows",
     ],
+    hints: ["load sales", "filter amount > 100", "show"],
     commandsAllowed: 5,
     goals: [
       { type: "planHas", label: "Plan contains filter", op: "filter" },
@@ -106,13 +115,15 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Select region and amount only, then show.",
     intro: [
-      "select drops columns early — good hygiene before wide ops.",
+      "select drops columns early. In Spark this is not cosmetic: every column you keep is bytes shuffled, spilled, and cached.",
+      "",
+      "Column pruning is one of the cheapest wins before a wide op. Keep the schema narrow as soon as you know what you need.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "select region, amount",
-      "show",
+    learn: [
+      "select projects a narrow schema",
+      "early projection cuts shuffle cost later",
     ],
+    hints: ["load sales", "select region, amount", "show"],
     commandsAllowed: 5,
     goals: [
       { type: "planHas", label: "Plan contains select", op: "select" },
@@ -127,11 +138,17 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Chain 3+ transformations, then run exactly one action.",
     intro: [
-      "Transformations only describe work. Nothing executes until an action",
-      "(show, count, collect, write).",
+      "Transformations describe *what* to compute. Actions decide *when* to compute.",
       "",
-      "Stack filter + select + sort (or limit) and finish with show.",
+      "Stack filter + select + sort (or limit) and finish with a single show.",
+      "While you type transforms, the DAG grows but partitions stay idle. The first action launches stages.",
+      "",
+      "Mental model: DataFrame = query plan handle, not a local array of rows.",
     ].join("\n"),
+    learn: [
+      "transforms chain into one logical plan",
+      "actions trigger execution and stages",
+    ],
     hints: [
       "load sales",
       "filter amount > 50",
@@ -153,14 +170,18 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Use explain to inspect plan and stages.",
     intro: [
-      "explain prints the logical plan and stage split.",
-      "Wide ops (groupBy, join, repartition) start new stages after a shuffle.",
+      "explain prints the logical plan and how it splits into stages.",
+      "",
+      "Narrow ops (filter, select, map) fuse into the current stage — no network.",
+      "Wide ops (groupBy, join, repartition) force a shuffle and start a new stage.",
+      "",
+      "Read the output as: what Spark *intends* to do, and where the network boundary sits. That boundary is where jobs usually get slow.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "filter amount > 10",
-      "explain",
+    learn: [
+      "explain shows plan and stage split",
+      "wide ops introduce shuffle boundaries",
     ],
+    hints: ["load sales", "filter amount > 10", "explain"],
     commandsAllowed: 6,
     goals: [
       { type: "command", label: "Run explain", head: "explain" },
@@ -174,15 +195,19 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Run both count and collect on filtered sales.",
     intro: [
-      "Actions materialize the plan. count is cheap on the simulator;",
-      "collect brings rows to the driver.",
+      "Actions materialize the plan. Different actions have different costs and side effects:",
+      "  count  — returns a number; driver stays light",
+      "  collect — ships rows to the driver (dangerous on big data)",
+      "  show   — limited collect for debugging",
+      "  write  — sinks results (here: simulated)",
+      "",
+      "Run count and collect on the same filter. Both execute the lineage; collect is the one that moves data to you.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "filter amount > 100",
-      "count",
-      "collect",
+    learn: [
+      "count vs collect have different costs",
+      "collect brings rows to the driver",
     ],
+    hints: ["load sales", "filter amount > 100", "count", "collect"],
     commandsAllowed: 7,
     goals: [
       { type: "command", label: "Run count", head: "count" },
@@ -197,13 +222,14 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Count west-region sales without selecting columns.",
     intro: [
-      "filter region == west then count.",
+      "Sometimes you only need cardinality. filter region == west then count.",
+      "Spark can answer count without building a full result table in the driver — keep actions minimal when the answer is a scalar.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "filter region == west",
-      "count",
+    learn: [
+      "filter on string equality (region == west)",
+      "count is a cheap scalar action",
     ],
+    hints: ["load sales", "filter region == west", "count"],
     commandsAllowed: 5,
     goals: [
       { type: "command", label: "Run count", head: "count" },
@@ -217,14 +243,17 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Sum amount by region and show the aggregate.",
     intro: [
-      "groupBy is a wide transformation — it shuffles rows so equal keys meet.",
-      "You should see a stage barrier on the DAG.",
+      "groupBy is a *wide* transformation. Equal keys must meet on the same executor, so Spark shuffles rows across the network — that is a stage boundary on the DAG.",
+      "",
+      "What shuffle actually does: map-side partitions are re-partitioned by key hash, written, transferred, and merged on reduce-side. That is why groupBy/join dominate job wall-time.",
+      "",
+      "groupBy region sum amount should produce one row per region (4 regions in sales).",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "groupBy region sum amount",
-      "show",
+    learn: [
+      "groupBy is wide and shuffles by key",
+      "sum(amount) per region yields 4 groups",
     ],
+    hints: ["load sales", "groupBy region sum amount", "show"],
     commandsAllowed: 5,
     goals: [
       { type: "planHas", label: "Plan contains groupBy", op: "groupBy" },
@@ -239,14 +268,16 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Join sales with users on user_id / id, then show.",
     intro: [
-      "Join is wide: both sides shuffle on the key.",
-      "sales.user_id matches users.id.",
+      "Join is wide: both sides shuffle on the key so matching rows land together.",
+      "sales.user_id matches users.id. After the join each sales row carries user attributes (name, tier, city).",
+      "",
+      "Skewed keys make some reducers finish last (stragglers). Small demo data hides this — production jobs do not.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "join users on user_id",
-      "show",
+    learn: [
+      "join shuffles both sides on the key",
+      "sales.user_id joins to users.id",
     ],
+    hints: ["load sales", "join users on user_id", "show"],
     commandsAllowed: 6,
     goals: [
       { type: "planHas", label: "Plan contains join", op: "join" },
@@ -260,16 +291,18 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Cache a filtered frame and run two actions.",
     intro: [
-      "cache avoids recomputing lineage on every action.",
-      "After cache, two show/count runs should report lower cost the second time.",
+      "If the same lineage feeds several actions, each action recomputes from the source unless you cache.",
+      "cache/persist stores the computed partitions (memory and/or disk) and short-circuits later stages.",
+      "",
+      "Here cost is simulated: the second action after cache reports a much lower compute cost. In real Spark you see this as fewer stages / missing source scans in the UI.",
+      "",
+      "Cache is an *intent* to reuse — the first action still pays full compute to fill the cache.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "filter amount > 50",
-      "cache",
-      "show",
-      "count",
+    learn: [
+      "cache avoids recomputing lineage",
+      "first action after cache still fills it",
     ],
+    hints: ["load sales", "filter amount > 50", "cache", "show", "count"],
     commandsAllowed: 8,
     goals: [
       { type: "cached", label: "DataFrame is cached", value: true },
@@ -283,13 +316,16 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Repartition sales to 4 partitions and show.",
     intro: [
-      "repartition(n) is wide (full shuffle). coalesce(n) narrows partitions cheaply.",
+      "Partition count sets parallelism. Too few partitions under-use executors; too many add scheduler overhead and tiny tasks.",
+      "",
+      "repartition(n) reshuffles all data (wide). coalesce(n) merges partitions without a full shuffle when shrinking.",
+      "Watch the partition strip after repartition 4 — rows spread across p0..p3.",
     ].join("\n"),
-    hints: [
-      "load sales",
-      "repartition 4",
-      "show",
+    learn: [
+      "partition count controls parallelism",
+      "repartition is wide; coalesce is cheaper to shrink",
     ],
+    hints: ["load sales", "repartition 4", "show"],
     commandsAllowed: 5,
     goals: [
       { type: "planHas", label: "Plan contains repartition", op: "repartition" },
@@ -303,15 +339,18 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Run a sparksql SELECT with WHERE.",
     intro: [
-      "sparksql maps a tiny SQL subset onto the same plan engine.",
+      "Spark SQL compiles to the same physical plan as the DataFrame API. SQL is not a separate engine — it is another front-end on Catalyst.",
+      "",
+      "Example: select region, amount from sales where amount > 100",
+      "The WHERE clause becomes a filter node; SELECT becomes projection. Same lazy rules apply until the SQL result is materialized.",
     ].join("\n"),
-    hints: [
-      'sparksql select region, amount from sales where amount > 100',
+    learn: [
+      "Spark SQL shares the DataFrame plan engine",
+      "WHERE maps to filter; SELECT to projection",
     ],
+    hints: ["sparksql select region, amount from sales where amount > 100"],
     commandsAllowed: 4,
-    goals: [
-      { type: "command", label: "Run sparksql", head: "sparksql" },
-    ],
+    goals: [{ type: "command", label: "Run sparksql", head: "sparksql" }],
   },
   pipeline: {
     id: "pipeline",
@@ -320,8 +359,19 @@ export const LEVELS = {
     difficulty: 4,
     goalText: "Filter -> withColumn -> groupBy -> show.",
     intro: [
-      "Mix narrow and wide ops. Keep the DAG honest.",
+      "A realistic job mixes narrow and wide ops:",
+      "  filter / withColumn — narrow, fuse into one stage",
+      "  groupBy — wide, starts the next stage after shuffle",
+      "",
+      "withColumn tipped amount * 1.1 derives a column without leaving the stage.",
+      "Then groupBy region sum tipped aggregates after the shuffle boundary.",
+      "",
+      "Read the DAG left-to-right: source → filter → withColumn || shuffle || groupBy → show.",
     ].join("\n"),
+    learn: [
+      "withColumn derives columns without shuffle",
+      "mixed narrow+wide pipelines split stages",
+    ],
     hints: [
       "load sales",
       "filter amount > 20",
@@ -356,17 +406,41 @@ export function allLevels() {
 }
 
 /**
+ * Next unsolved-friendly level after id.
+ *
+ * @param {string} id
+ * @returns {any|null}
+ */
+export function getNextLevel(id) {
+  const list = allLevels();
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i].id === id) return list[i + 1] || null;
+  }
+  return list[0] || null;
+}
+
+/**
  * Evaluate goal list against session + level.
  *
  * @param {any} level
  * @param {object} state
- * @returns {{ met: boolean, checks: { label: string, done: boolean, detail: string }[] }}
+ * @returns {{ met: boolean, checks: { label: string, done: boolean, detail: string, pending: boolean }[] }}
  */
 export function checkGoals(level, state) {
   const goals = level.goals || [];
-  const checks = goals.map(function (g) {
+  const checks = goals.map(function (g, index) {
     const r = evalGoal(g, state);
-    return { label: g.label || g.type, done: r.done, detail: r.detail };
+    return {
+      label: g.label || g.type,
+      done: r.done,
+      detail: r.detail,
+      pending: !r.done,
+      index: index,
+    };
+  });
+  const firstPending = checks.find(function (c) { return c.pending; });
+  checks.forEach(function (c) {
+    c.active = Boolean(firstPending && c.index === firstPending.index);
   });
   return {
     met: checks.every(function (c) { return c.done; }),

@@ -2,8 +2,7 @@
 
 An interactive Apache Spark visualization and tutorial sandbox.
 
-LearnGitBranching makes git click by drawing the tree while you type commands.
-**learnSpark** does the same for Spark: a living **job DAG**, **partition buckets**, and a small command language that teaches lazy evaluation, actions, shuffles, and caching.
+A living **job DAG**, **partition buckets**, and a small command language that teaches lazy evaluation, actions, shuffles, and caching — so you understand the execution model, not just syntax.
 
 ## Live
 
@@ -11,7 +10,7 @@ https://alisadeghiaghili.github.io/learn-spark/
 
 ## Run it
 
-Open `index.html` in a modern browser (ES modules work over any static server, including the MiMo Desktop preview). Optional:
+Open `index.html` in a modern browser (ES modules work over any static server). Optional:
 
 ```bash
 npm test
@@ -20,9 +19,11 @@ npm test
 ## Modes
 
 - **Sandbox** — free play on demo tables (`sales`, `users`, `products`, `logs`)
-- **Levels** — sequenced lessons with goal checks and command golf (`par`)
+- **Levels** — sequenced lessons with goal checks, command golf, and shareable progress
 
+Terminal keys: `↑`/`↓` history, `Tab` word completion, `Esc` clears the line.
 Type `levels` to browse, `hint` when stuck, `next` after a win, `undo` / `reset` to rewind.
+Progress is saved in this browser (localStorage + cookie) so you can resume later.
 
 ## Command language
 
@@ -61,10 +62,10 @@ This is a pedagogical simulator of Spark’s *execution model* — not a Spark r
 index.html
 assets/css/main.css
 src/engine/    datasets, plan builders, expressions, materialization, commands
-src/game/      level sequences + goal predicates
-src/ui/        app shell + DAG/partition visualizers
+src/game/      level sequences + goal predicates + teaching copy
+src/ui/        app shell, terminal, DAG/partition views, share, progress
 docs/          design notes + ADR
-tests/         node:test suite for the engine
+tests/         node:test suite for the engine and share copy
 ```
 
 ## Design
@@ -73,4 +74,4 @@ See [docs/DESIGN.md](docs/DESIGN.md) and [docs/ADR-001-client-only-sim.md](docs/
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE).

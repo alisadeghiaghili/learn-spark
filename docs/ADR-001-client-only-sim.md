@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-LearnGitBranching succeeds because it is a 100% client-side visualizer with no backend. learnSpark must teach Spark's execution model (lazy evaluation, stages, shuffles, caching, partitions) without requiring a cluster or JVM in the browser.
+A 100% client-side visualizer with no backend stays frictionless: open a tab and learn. learnSpark must teach Spark's execution model (lazy evaluation, stages, shuffles, caching, partitions) without requiring a cluster or JVM in the browser.
 
 ## Decision
 
@@ -21,6 +21,8 @@ Implement a **deterministic in-browser row engine** that:
 
 Ship as static ES modules + CSS + SVG. No bundler required for local preview.
 
+Persist learner progress in `localStorage` **and** a ~400-day cookie so a returning user resumes mid-curriculum.
+
 ## Consequences
 
 - Fast iteration, trivial deploy, offline-friendly.
@@ -30,4 +32,4 @@ Ship as static ES modules + CSS + SVG. No bundler required for local preview.
 ## Alternatives considered
 
 - **Pyodide / real Spark**: too heavy, slow cold start, fails the "open and play" bar.
-- **Server-side Spark cluster**: contradicts the LGB product model and adds ops burden.
+- **Server-side Spark cluster**: adds ops burden and breaks offline learning.
