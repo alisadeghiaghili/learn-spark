@@ -5,6 +5,10 @@ An interactive Apache Spark visualization and tutorial sandbox.
 LearnGitBranching makes git click by drawing the tree while you type commands.
 **learnSpark** does the same for Spark: a living **job DAG**, **partition buckets**, and a small command language that teaches lazy evaluation, actions, shuffles, and caching.
 
+## Live
+
+https://alisadeghiaghili.github.io/learn-spark/
+
 ## Run it
 
 Open `index.html` in a modern browser (ES modules work over any static server, including the MiMo Desktop preview). Optional:
