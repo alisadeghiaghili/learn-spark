@@ -41,14 +41,21 @@ cache | unpersist
 sparksql <select ...>
 ```
 
-## Level sequences
+## Level sequences (38 levels)
 
-1. **intro** — load, show, schema, filter, select
-2. **lazy** — transformations vs actions; `explain`
-3. **actions** — count, collect, write semantics
-4. **shuffle** — groupBy, join, wide dependencies
-5. **optimize** — cache, repartition, coalesce
-6. **advanced** — sparksql, multi-stage plans
+1. **intro** — architecture breath, load, filter, project
+2. **lazy** — transforms vs actions, explain stages
+3. **actions** — count/collect/write sinks
+4. **shuffle** — groupBy, join, distinct
+5. **optimize** — cache, repartition, sample/limit
+6. **sql** — Spark SQL, Catalyst logical→physical, mixed pipeline
+7. **joins** — outer, broadcast, sort-merge, skew
+8. **analytics** — window rank/running, explode, UDF cost
+9. **internals** — unified memory, spill, Tungsten codegen, AQE
+10. **data** — formats, schema discipline, partitioned writes
+11. **streaming** — micro-batch model, watermarks
+12. **mlops** — feature stage, pipeline mental model
+13. **ops** — skew mitigation, retries/debug order
 
 ## Architecture decisions
 

@@ -70,6 +70,39 @@ export const DATASETS = {
       { id: 4, sku: 'P-400', category: 'audio', price: 120 },
     ],
   },
+  events: {
+    name: "events",
+    schema: [
+      { name: "id", type: "int" },
+      { name: "user_id", type: "int" },
+      { name: "event", type: "string" },
+      { name: "tags", type: "string" },
+      { name: "ts", type: "string" },
+    ],
+    rows: [
+      { id: 1, user_id: 1, event: "click", tags: "mobile,promo", ts: "2024-02-01" },
+      { id: 2, user_id: 2, event: "view", tags: "desktop", ts: "2024-02-01" },
+      { id: 3, user_id: 1, event: "purchase", tags: "mobile,vip", ts: "2024-02-02" },
+      { id: 4, user_id: 3, event: "click", tags: "mobile", ts: "2024-02-02" },
+      { id: 5, user_id: 4, event: "view", tags: "desktop,promo", ts: "2024-02-03" },
+      { id: 6, user_id: 2, event: "click", tags: "promo", ts: "2024-02-03" },
+    ],
+  },
+  campaigns: {
+    name: "campaigns",
+    schema: [
+      { name: "id", type: "int" },
+      { name: "user_id", type: "int" },
+      { name: "spend", type: "double" },
+      { name: "channel", type: "string" },
+    ],
+    rows: [
+      { id: 1, user_id: 1, spend: 120, channel: "search" },
+      { id: 2, user_id: 2, spend: 80, channel: "social" },
+      { id: 3, user_id: 99, spend: 40, channel: "email" },
+      { id: 4, user_id: 3, spend: 200, channel: "search" },
+    ],
+  },
   logs: {
     name: 'logs',
     schema: [

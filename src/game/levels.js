@@ -1,54 +1,21 @@
 /**
- * Level sequences, teaching copy, and goal predicates.
- *
- * Goal types:
- *  - command: at least one command whose head matches
- *  - planHas: plan contains an op name
- *  - rows: materialized row count equals value
- *  - columns: result columns include names
- *  - cached: current df is cached
- *  - actionRan: at least N actions executed
- *  - partitions: current partitions equal value
- *  - stages: last run has at least N stages
+ * Level sequences, deep teaching copy, and goal predicates.
  */
 
 export const SEQUENCES = [
-  {
-    id: "intro",
-    title: "Intro",
-    blurb: "Load tables and look around",
-    levels: ["welcome", "filter-tour", "project-cols"],
-  },
-  {
-    id: "lazy",
-    title: "Lazy evaluation",
-    blurb: "Transformations vs actions",
-    levels: ["lazy-build", "explain-stages"],
-  },
-  {
-    id: "actions",
-    title: "Actions",
-    blurb: "show, count, collect",
-    levels: ["first-action", "count-cards"],
-  },
-  {
-    id: "shuffle",
-    title: "Shuffle & wide ops",
-    blurb: "groupBy, join, partitions",
-    levels: ["group-regions", "join-users"],
-  },
-  {
-    id: "optimize",
-    title: "Optimize",
-    blurb: "cache and partitioning",
-    levels: ["cache-it", "tune-parts"],
-  },
-  {
-    id: "advanced",
-    title: "Advanced",
-    blurb: "SQL and multi-stage plans",
-    levels: ["sparksql-tour", "pipeline"],
-  },
+  { id: "intro", title: "Intro", blurb: "Sources, filter, project", levels: ["welcome", "filter-tour", "project-cols"] },
+  { id: "lazy", title: "Lazy evaluation", blurb: "Transforms vs actions", levels: ["lazy-build", "explain-stages"] },
+  { id: "actions", title: "Actions", blurb: "show, count, collect, write", levels: ["first-action", "count-cards", "write-sink"] },
+  { id: "shuffle", title: "Shuffle & wide ops", blurb: "groupBy, join, partitions", levels: ["group-regions", "join-users", "distinct-wide"] },
+  { id: "optimize", title: "Optimize", blurb: "cache and partitioning", levels: ["cache-it", "tune-parts", "sample-limit"] },
+  { id: "sql", title: "SQL & Catalyst", blurb: "Logical to physical", levels: ["sparksql-tour", "catalyst-plan", "pipeline"] },
+  { id: "joins", title: "Join strategies", blurb: "Broadcast, SMJ, outer, skew", levels: ["join-outer", "join-broadcast", "join-sortmerge", "join-skew"] },
+  { id: "analytics", title: "Analytics", blurb: "Window, nested, UDF", levels: ["window-rank", "window-running", "explode-tags", "udf-cost"] },
+  { id: "internals", title: "Internals", blurb: "Memory, spill, Tungsten", levels: ["memory-model", "spill-watch", "tungsten-codegen", "aqe-view"] },
+  { id: "data", title: "Data sources", blurb: "Formats, schema, writes", levels: ["formats-cost", "schema-strict", "write-partitioned"] },
+  { id: "streaming", title: "Streaming", blurb: "Micro-batches, watermark", levels: ["stream-batch", "stream-watermark"] },
+  { id: "mlops", title: "ML pipelines", blurb: "Feature + model stages", levels: ["ml-features", "ml-pipeline"] },
+  { id: "ops", title: "Ops & debugging", blurb: "Skew, retries, UI", levels: ["ops-skew-fix", "ops-retry"] },
 ];
 
 export const LEVELS = {
@@ -59,20 +26,20 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Load the sales table and show its rows.",
     intro: [
-      "Spark is a distributed data engine. Your code builds a *plan*; a cluster of executors later turns that plan into work on *partitions* of data.",
+      "Spark is a distributed data engine. Driver builds a plan; executors run tasks over partitions.",
       "",
-      "This sandbox shows three surfaces at once:",
-      "  1. the Job DAG (logical plan and stages)",
-      "  2. partition buckets (where rows live)",
-      "  3. a terminal (commands you would type in a notebook shell)",
+      "Surfaces here:",
+      "  1. Job DAG - logical plan and stage boundaries",
+      "  2. Partitions - where rows live across executors",
+      "  3. Terminal - the commands you would type in a shell/notebook",
       "",
-      "Tables here are tiny on purpose so every row is inspectable.",
+      "Architecture in one breath: ClusterManager allocates executors. Driver compiles DataFrame ops into stages of tasks. Each task processes one partition. Shuffle (wide) ops force a network barrier between stages.",
       "",
       "Your job: load sales, then show it.",
     ].join("\n"),
     learn: [
-      "Spark work starts from a named table/source",
-      "show is an action that materializes rows",
+      "driver / executor / partition mental model",
+      "show materializes a table into rows",
     ],
     hints: ["load sales", "show"],
     commandsAllowed: 4,
@@ -89,15 +56,13 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Keep only sales with amount > 100, then show.",
     intro: [
-      "filter is a *transformation*. It does not scan data when you type it — it only extends the plan.",
-      "Nothing is computed until an action (show, count, collect, write) runs.",
+      "filter is a transformation. It extends the plan only - no scan yet.",
+      "Narrow dependency: each output partition depends on exactly one input partition. That is why filter can fuse with neighbors into one stage (whole-stage codegen later).",
       "",
-      "Why this matters: real Spark jobs chain dozens of transforms. If each one executed immediately you would pay cluster cost on every keystroke. Lazy plans let the optimizer fuse narrow ops into one pass.",
-      "",
-      "Watch the DAG grow a filter node, then force execution with show.",
+      "If transforms ran eagerly you would pay cluster cost per keystroke. Lazy plans let Catalyst fuse and prune before any task starts.",
     ].join("\n"),
     learn: [
-      "filter is lazy — plan only",
+      "filter is a narrow lazy transform",
       "amount > 100 keeps high-value rows",
     ],
     hints: ["load sales", "filter amount > 100", "show"],
@@ -115,13 +80,12 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Select region and amount only, then show.",
     intro: [
-      "select drops columns early. In Spark this is not cosmetic: every column you keep is bytes shuffled, spilled, and cached.",
-      "",
-      "Column pruning is one of the cheapest wins before a wide op. Keep the schema narrow as soon as you know what you need.",
+      "Column pruning is not cosmetic. Every retained column is bytes scanned, shuffled, cached, and serialized (Kryo/Java).",
+      "Push select early - before join/groupBy - so wide ops move fewer bytes.",
     ].join("\n"),
     learn: [
-      "select projects a narrow schema",
-      "early projection cuts shuffle cost later",
+      "select prunes the schema",
+      "early projection cuts shuffle and cache cost",
     ],
     hints: ["load sales", "select region, amount", "show"],
     commandsAllowed: 5,
@@ -138,24 +102,16 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Chain 3+ transformations, then run exactly one action.",
     intro: [
-      "Transformations describe *what* to compute. Actions decide *when* to compute.",
+      "Transformations = what. Actions = when.",
+      "DataFrame is a query handle, not a local array. Until show/count/collect/write, executors idle.",
       "",
-      "Stack filter + select + sort (or limit) and finish with a single show.",
-      "While you type transforms, the DAG grows but partitions stay idle. The first action launches stages.",
-      "",
-      "Mental model: DataFrame = query plan handle, not a local array of rows.",
+      "Stack filter + select + sort, finish with one show. Watch the DAG grow while partitions stay cold.",
     ].join("\n"),
     learn: [
       "transforms chain into one logical plan",
-      "actions trigger execution and stages",
+      "actions launch stages and tasks",
     ],
-    hints: [
-      "load sales",
-      "filter amount > 50",
-      "select region, amount",
-      "sort amount desc",
-      "show",
-    ],
+    hints: ["load sales", "filter amount > 50", "select region, amount", "sort amount desc", "show"],
     commandsAllowed: 8,
     goals: [
       { type: "planOpsMin", label: "At least 3 transforms in plan", value: 3 },
@@ -170,15 +126,14 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Use explain to inspect plan and stages.",
     intro: [
-      "explain prints the logical plan and how it splits into stages.",
+      "explain prints logical ops, a physical sketch, stage split, and memory.",
       "",
-      "Narrow ops (filter, select, map) fuse into the current stage — no network.",
-      "Wide ops (groupBy, join, repartition) force a shuffle and start a new stage.",
-      "",
-      "Read the output as: what Spark *intends* to do, and where the network boundary sits. That boundary is where jobs usually get slow.",
+      "Narrow (filter/select/map) fuses into the current stage - no network.",
+      "Wide (groupBy/join/repartition/distinct) forces shuffle and a new stage.",
+      "The network boundary is where production jobs usually die.",
     ].join("\n"),
     learn: [
-      "explain shows plan and stage split",
+      "explain shows logical + physical + stages",
       "wide ops introduce shuffle boundaries",
     ],
     hints: ["load sales", "filter amount > 10", "explain"],
@@ -188,6 +143,7 @@ export const LEVELS = {
       { type: "planHas", label: "Plan has at least one transform", op: "filter" },
     ],
   },
+
   "first-action": {
     id: "first-action",
     sequence: "actions",
@@ -195,18 +151,14 @@ export const LEVELS = {
     difficulty: 2,
     goalText: "Run both count and collect on filtered sales.",
     intro: [
-      "Actions materialize the plan. Different actions have different costs and side effects:",
-      "  count  — returns a number; driver stays light",
-      "  collect — ships rows to the driver (dangerous on big data)",
-      "  show   — limited collect for debugging",
-      "  write  — sinks results (here: simulated)",
+      "count - scalar, driver stays light.",
+      "collect - ships all rows to the driver (OOM risk on real data).",
+      "show - limited collect for debugging.",
+      "write - sink (partitioned files, table, JDBC).",
       "",
-      "Run count and collect on the same filter. Both execute the lineage; collect is the one that moves data to you.",
+      "Same lineage, different costs. Prefer count/agg when you only need a scalar.",
     ].join("\n"),
-    learn: [
-      "count vs collect have different costs",
-      "collect brings rows to the driver",
-    ],
+    learn: ["count vs collect cost profiles", "collect brings rows to the driver"],
     hints: ["load sales", "filter amount > 100", "count", "collect"],
     commandsAllowed: 7,
     goals: [
@@ -222,18 +174,34 @@ export const LEVELS = {
     difficulty: 1,
     goalText: "Count west-region sales without selecting columns.",
     intro: [
-      "Sometimes you only need cardinality. filter region == west then count.",
-      "Spark can answer count without building a full result table in the driver — keep actions minimal when the answer is a scalar.",
+      "filter region == west then count.",
+      "Scalar actions avoid building a driver-side table. This is the default for health checks and tests.",
     ].join("\n"),
-    learn: [
-      "filter on string equality (region == west)",
-      "count is a cheap scalar action",
-    ],
+    learn: ["string equality filter (region == west)", "count is a cheap scalar action"],
     hints: ["load sales", "filter region == west", "count"],
     commandsAllowed: 5,
     goals: [
       { type: "command", label: "Run count", head: "count" },
       { type: "rows", label: "West has 4 sales", value: 4 },
+    ],
+  },
+  "write-sink": {
+    id: "write-sink",
+    sequence: "actions",
+    title: "Write sink",
+    difficulty: 2,
+    goalText: "Write filtered rows (simulated sink).",
+    intro: [
+      "write is an action that commits a job and produces files/table rows.",
+      "Modes matter in real Spark: errorifexists / overwrite / append / ignore.",
+      "Partitioning by a low-cardinality key (e.g. region) makes later reads prunable.",
+    ].join("\n"),
+    learn: ["write is an action with side effects", "write modes and partition pruning"],
+    hints: ["load sales", "filter amount > 50", "write"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "command", label: "Run write", head: "write" },
+      { type: "planHas", label: "Filtered before write", op: "filter" },
     ],
   },
   "group-regions": {
@@ -243,16 +211,12 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Sum amount by region and show the aggregate.",
     intro: [
-      "groupBy is a *wide* transformation. Equal keys must meet on the same executor, so Spark shuffles rows across the network — that is a stage boundary on the DAG.",
+      "groupBy is wide. Equal keys must meet on one reducer: map-side partition by hash(key) then write shuffle files, transfer, reduce-side merge.",
+      "That is a stage boundary on the DAG and the number one wall-time item in big jobs.",
       "",
-      "What shuffle actually does: map-side partitions are re-partitioned by key hash, written, transferred, and merged on reduce-side. That is why groupBy/join dominate job wall-time.",
-      "",
-      "groupBy region sum amount should produce one row per region (4 regions in sales).",
+      "sales has 4 regions - expect 4 output rows after sum(amount).",
     ].join("\n"),
-    learn: [
-      "groupBy is wide and shuffles by key",
-      "sum(amount) per region yields 4 groups",
-    ],
+    learn: ["groupBy shuffles by key into a new stage", "sum(amount) per region yields 4 groups"],
     hints: ["load sales", "groupBy region sum amount", "show"],
     commandsAllowed: 5,
     goals: [
@@ -268,20 +232,36 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Join sales with users on user_id / id, then show.",
     intro: [
-      "Join is wide: both sides shuffle on the key so matching rows land together.",
-      "sales.user_id matches users.id. After the join each sales row carries user attributes (name, tier, city).",
+      "Join is wide by default: both sides shuffle on the key.",
+      "sales.user_id matches users.id. Output rows carry user attributes (name, tier, city).",
       "",
-      "Skewed keys make some reducers finish last (stragglers). Small demo data hides this — production jobs do not.",
+      "Skewed keys create stragglers - one reducer owns the hot key and finishes last. Demo data hides this; production does not.",
     ].join("\n"),
-    learn: [
-      "join shuffles both sides on the key",
-      "sales.user_id joins to users.id",
-    ],
+    learn: ["equi-join shuffles both sides on the key", "sales.user_id joins to users.id"],
     hints: ["load sales", "join users on user_id", "show"],
     commandsAllowed: 6,
     goals: [
       { type: "planHas", label: "Plan contains join", op: "join" },
       { type: "command", label: "Materialize join", head: "show" },
+    ],
+  },
+  "distinct-wide": {
+    id: "distinct-wide",
+    sequence: "shuffle",
+    title: "distinct is wide",
+    difficulty: 2,
+    goalText: "Get distinct regions from sales.",
+    intro: [
+      "distinct looks innocent. Internally it is a shuffle on the full row (or selected keys) so duplicates land together.",
+      "Prefer approximate strategies only when the product allows - exact distinct is a wide job.",
+    ].join("\n"),
+    learn: ["distinct is a wide dependency", "dedupe requires co-locating equal rows"],
+    hints: ["load sales", "select region", "distinct", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "distinct in plan", op: "distinct" },
+      { type: "command", label: "show result", head: "show" },
+      { type: "rows", label: "4 unique regions", value: 4 },
     ],
   },
   "cache-it": {
@@ -291,17 +271,13 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Cache a filtered frame and run two actions.",
     intro: [
-      "If the same lineage feeds several actions, each action recomputes from the source unless you cache.",
-      "cache/persist stores the computed partitions (memory and/or disk) and short-circuits later stages.",
+      "Reuse of the same lineage without cache recomputes from source every action.",
+      "cache/persist stores partitions (MEMORY_AND_DISK by default) and short-circuits later stages.",
       "",
-      "Here cost is simulated: the second action after cache reports a much lower compute cost. In real Spark you see this as fewer stages / missing source scans in the UI.",
-      "",
-      "Cache is an *intent* to reuse — the first action still pays full compute to fill the cache.",
+      "First action after cache still pays full compute to fill it. Subsequent actions should report lower cost here.",
+      "Unpersist when the DataFrame dies - cached blocks otherwise evict useful data.",
     ].join("\n"),
-    learn: [
-      "cache avoids recomputing lineage",
-      "first action after cache still fills it",
-    ],
+    learn: ["cache trades memory for recompute", "first action fills the cache"],
     hints: ["load sales", "filter amount > 50", "cache", "show", "count"],
     commandsAllowed: 8,
     goals: [
@@ -316,15 +292,11 @@ export const LEVELS = {
     difficulty: 3,
     goalText: "Repartition sales to 4 partitions and show.",
     intro: [
-      "Partition count sets parallelism. Too few partitions under-use executors; too many add scheduler overhead and tiny tasks.",
-      "",
-      "repartition(n) reshuffles all data (wide). coalesce(n) merges partitions without a full shuffle when shrinking.",
-      "Watch the partition strip after repartition 4 — rows spread across p0..p3.",
+      "Partition count = parallelism. Too few under-use executors; too many = tiny tasks and scheduler tax.",
+      "Rule of thumb: about 128MB per partition on object stores / 256MB Parquet targets.",
+      "repartition(n) full shuffle. coalesce(n) merges partitions without full shuffle when shrinking.",
     ].join("\n"),
-    learn: [
-      "partition count controls parallelism",
-      "repartition is wide; coalesce is cheaper to shrink",
-    ],
+    learn: ["partition count sets task parallelism", "repartition is wide; coalesce is cheaper to shrink"],
     hints: ["load sales", "repartition 4", "show"],
     commandsAllowed: 5,
     goals: [
@@ -332,46 +304,77 @@ export const LEVELS = {
       { type: "partitions", label: "4 partitions", value: 4 },
     ],
   },
+  "sample-limit": {
+    id: "sample-limit",
+    sequence: "optimize",
+    title: "Sample then limit",
+    difficulty: 2,
+    goalText: "Sample 50% of sales and take 3 rows.",
+    intro: [
+      "sample is for exploration and approximate stats - not for correctness-critical counts.",
+      "limit without order is nondeterministic across runs (any partition can win).",
+      "Together they are the cheap way to peek at big data in notebooks.",
+    ].join("\n"),
+    learn: ["sample is approximate", "limit is nondeterministic without sort"],
+    hints: ["load sales", "sample 0.5", "limit 3", "show"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "planHas", label: "sample present", op: "sample" },
+      { type: "planHas", label: "limit present", op: "limit" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+
   "sparksql-tour": {
     id: "sparksql-tour",
-    sequence: "advanced",
+    sequence: "sql",
     title: "Spark SQL",
     difficulty: 3,
     goalText: "Run a sparksql SELECT with WHERE.",
     intro: [
-      "Spark SQL compiles to the same physical plan as the DataFrame API. SQL is not a separate engine — it is another front-end on Catalyst.",
+      "Spark SQL is a front-end on the same Catalyst optimizer as the DataFrame API.",
+      "WHERE becomes Filter. SELECT becomes Project. GROUP BY becomes Aggregate. There is no second engine.",
       "",
       "Example: select region, amount from sales where amount > 100",
-      "The WHERE clause becomes a filter node; SELECT becomes projection. Same lazy rules apply until the SQL result is materialized.",
     ].join("\n"),
-    learn: [
-      "Spark SQL shares the DataFrame plan engine",
-      "WHERE maps to filter; SELECT to projection",
-    ],
+    learn: ["SQL and DataFrames share Catalyst", "WHERE maps to Filter; SELECT to Project"],
     hints: ["sparksql select region, amount from sales where amount > 100"],
     commandsAllowed: 4,
     goals: [{ type: "command", label: "Run sparksql", head: "sparksql" }],
   },
+  "catalyst-plan": {
+    id: "catalyst-plan",
+    sequence: "sql",
+    title: "Catalyst: logical to physical",
+    difficulty: 4,
+    goalText: "explain a mixed plan and read the physical sketch.",
+    intro: [
+      "Pipeline: Parsed -> Analyzed -> Optimized (logical) -> Physical -> Codegen.",
+      "",
+      "Optimizer rules you should know: predicate pushdown, projection pruning, constant folding, join reordering, filter collapse.",
+      "Physical sketch here shows FileScan, HashAggregate, SortMergeJoin / BroadcastHashJoin, Window.",
+      "Whole-stage codegen (Tungsten) fuses operators into one tight loop over unsafe rows - that is why Spark beats naive row-at-a-time JVM code.",
+    ].join("\n"),
+    learn: ["Catalyst phases: parse, analyze, optimize, physical", "codegen fuses operators for CPU efficiency"],
+    hints: ["load sales", "filter amount > 10", "groupBy region sum amount", "explain"],
+    commandsAllowed: 7,
+    goals: [
+      { type: "command", label: "Run explain", head: "explain" },
+      { type: "planHas", label: "groupBy in plan", op: "groupBy" },
+    ],
+  },
   pipeline: {
     id: "pipeline",
-    sequence: "advanced",
+    sequence: "sql",
     title: "Full pipeline",
     difficulty: 4,
-    goalText: "Filter -> withColumn -> groupBy -> show.",
+    goalText: "Filter then withColumn then groupBy then show.",
     intro: [
-      "A realistic job mixes narrow and wide ops:",
-      "  filter / withColumn — narrow, fuse into one stage",
-      "  groupBy — wide, starts the next stage after shuffle",
-      "",
+      "narrow (filter, withColumn) fuse; wide (groupBy) starts the next stage after shuffle.",
       "withColumn tipped amount * 1.1 derives a column without leaving the stage.",
-      "Then groupBy region sum tipped aggregates after the shuffle boundary.",
-      "",
-      "Read the DAG left-to-right: source → filter → withColumn || shuffle || groupBy → show.",
+      "Read the DAG: source -> filter -> withColumn || shuffle || groupBy -> show.",
     ].join("\n"),
-    learn: [
-      "withColumn derives columns without shuffle",
-      "mixed narrow+wide pipelines split stages",
-    ],
+    learn: ["withColumn derives without shuffle", "mixed narrow+wide pipelines split stages"],
     hints: [
       "load sales",
       "filter amount > 20",
@@ -387,6 +390,424 @@ export const LEVELS = {
       { type: "rows", label: "Aggregated regions", value: 4 },
     ],
   },
+  "join-outer": {
+    id: "join-outer",
+    sequence: "joins",
+    title: "Outer joins",
+    difficulty: 4,
+    goalText: "Left-join campaigns to users and inspect unmatched keys.",
+    intro: [
+      "inner keeps matches only. left keeps every left row (nulls on the right). right mirrors that. full keeps both unmatched sides.",
+      "",
+      "Why it matters: anti-join patterns (left + is null) find missing dimension rows - a daily data-quality tool.",
+      "Unmatched key user_id=99 in campaigns is the teaching hook.",
+    ].join("\n"),
+    learn: ["inner vs left/right/full semantics", "outer join surfaces unmatched keys as nulls"],
+    hints: ["load campaigns", "join users on user_id left", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "join in plan", op: "join" },
+      { type: "command", label: "show", head: "show" },
+      { type: "rows", label: "left join keeps campaigns", value: 4 },
+    ],
+  },
+  "join-broadcast": {
+    id: "join-broadcast",
+    sequence: "joins",
+    title: "Broadcast join",
+    difficulty: 5,
+    goalText: "Force a broadcast join and explain it.",
+    intro: [
+      "If one side fits in executor memory (spark.sql.autoBroadcastJoinThreshold default 10MB), Spark broadcasts it and builds a hash table on every executor - no shuffle of the big side.",
+      "",
+      "join users on user_id broadcast - then explain should show BroadcastHashJoin and fewer shuffle stages.",
+      "When to force: small dimension tables (users, geo, currency). When not: large fact x large fact, or OOM risk.",
+    ].join("\n"),
+    learn: ["broadcast avoids shuffling the large side", "physical operator: BroadcastHashJoin"],
+    hints: ["load sales", "join users on user_id broadcast", "explain"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "join present", op: "join" },
+      { type: "command", label: "explain physical plan", head: "explain" },
+    ],
+  },
+  "join-sortmerge": {
+    id: "join-sortmerge",
+    sequence: "joins",
+    title: "Sort-merge join",
+    difficulty: 5,
+    goalText: "Force sort-merge join on two large sides.",
+    intro: [
+      "SortMergeJoin (SMJ) shuffles both sides by key, sorts partitions, then merges. Default for large joins when broadcast is off.",
+      "Cost: two shuffles + sorts. Benefit: stable memory profile, works at any size.",
+      "",
+      "join campaigns on id sort-merge then explain. Compare with broadcast: SMJ shows shuffle stages on both inputs.",
+    ].join("\n"),
+    learn: ["SMJ = shuffle both sides + sort + merge", "force sort-merge for large x large joins"],
+    hints: ["load users", "join campaigns on id sort-merge", "explain"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "join present", op: "join" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "join-skew": {
+    id: "join-skew",
+    sequence: "joins",
+    title: "Skew diagnosis",
+    difficulty: 5,
+    goalText: "Build a skewed join plan and explain the risk.",
+    intro: [
+      "Skew: one key holds 50% of rows. One reducer becomes a straggler; stage time = that reducer.",
+      "Symptoms: one task 10x longer, high GC, spill on one executor.",
+      "",
+      "Mitigations: salting the key, skew join hints (AQE), pre-aggregating, broadcasting a side, splitting hot keys.",
+      "Here: groupBy on region (west is hot in some sets) then explain - read the physical sketch for HashAggregate + shuffle.",
+    ].join("\n"),
+    learn: ["skew = hot key = straggler reducer", "salt / AQE skew join / pre-agg are fixes"],
+    hints: ["load sales", "groupBy region sum amount", "explain"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "command", label: "explain after aggregate", head: "explain" },
+      { type: "planHas", label: "groupBy wide op", op: "groupBy" },
+    ],
+  },
+
+  "window-rank": {
+    id: "window-rank",
+    sequence: "analytics",
+    title: "Window rank",
+    difficulty: 5,
+    goalText: "Rank sales by amount inside each region.",
+    intro: [
+      "Window functions compute per-partition-of-rows without collapsing to one row per group.",
+      "row_number / rank / dense_rank give positions; sum/avg/min/max give running or partition aggregates.",
+      "",
+      "window rank amount over region amount desc - each region gets 1..n by amount.",
+      "Unlike groupBy, the grain stays at the row. That is top-N-per-key, sessionization, and deltas.",
+    ].join("\n"),
+    learn: ["window keeps row grain (unlike groupBy)", "rank over region order by amount desc"],
+    hints: ["load sales", "window rank amount over region amount desc", "show"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "planHas", label: "window present", op: "window" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+  "window-running": {
+    id: "window-running",
+    sequence: "analytics",
+    title: "Running totals",
+    difficulty: 5,
+    goalText: "Compute a running sum of amount per region ordered by ts.",
+    intro: [
+      "window sum amount over region ts - cumulative sum within each region as time advances.",
+      "This is the standard shape for running balances, funnel steps, and SLA clocks.",
+      "lag/lead compare to the previous/next row in the window (session gaps, wow deltas).",
+    ].join("\n"),
+    learn: ["running aggregates via window sum", "order inside the window defines the cumulative axis"],
+    hints: ["load sales", "window sum amount over region ts", "show"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "planHas", label: "window present", op: "window" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+  "explode-tags": {
+    id: "explode-tags",
+    sequence: "analytics",
+    title: "Explode nested lists",
+    difficulty: 4,
+    goalText: "Explode event tags into one row per tag.",
+    intro: [
+      "events.tags is a comma-list (stand-in for array of strings). explode turns one row into n rows - one per element.",
+      "Nested types (struct/array/map) are first-class in Spark SQL. Explode is how you normalize arrays for groupBy/join.",
+      "",
+      "After explode, tags becomes a scalar and you can count by tag.",
+    ].join("\n"),
+    learn: ["explode densifies array columns into rows", "normalize nested lists before aggregation"],
+    hints: ["load events", "explode tags", "groupBy tags count *", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "explode present", op: "explode" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+  "udf-cost": {
+    id: "udf-cost",
+    sequence: "analytics",
+    title: "UDF cost",
+    difficulty: 4,
+    goalText: "Run a UDF and explain why it blocks codegen.",
+    intro: [
+      "Native Column expressions compile into Tungsten codegen. A JVM/Python UDF is a black box: serialize row, call, deserialize. Codegen stops at the UDF boundary.",
+      "Python UDFs are worse: pickling + process hop. Prefer pandas UDFs (vectorized) or native functions.",
+      "",
+      "udf upper region then explain - physical sketch marks non-native and cost rises.",
+    ].join("\n"),
+    learn: ["UDFs break whole-stage codegen", "prefer native expressions over UDFs"],
+    hints: ["load sales", "udf upper region", "explain"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "planHas", label: "udf present", op: "udf" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "memory-model": {
+    id: "memory-model",
+    sequence: "internals",
+    title: "Unified memory",
+    difficulty: 5,
+    goalText: "Force explain and read the memory block.",
+    intro: [
+      "Executor memory splits: execution (shuffle/sort/join) + storage (cache/broadcast). Unified memory manager borrows across the boundary.",
+      "When execution needs room it can evict cached blocks; when cache is full it can drop to disk (MEMORY_AND_DISK).",
+      "",
+      "explain prints peak and spill in the Memory block. Tiny demo rarely spills; know the shape for real jobs.",
+    ].join("\n"),
+    learn: ["execution vs storage memory share a pool", "cache can be evicted under execution pressure"],
+    hints: ["load sales", "filter amount > 1", "groupBy region sum amount", "explain"],
+    commandsAllowed: 7,
+    goals: [{ type: "command", label: "explain with memory block", head: "explain" }],
+  },
+  "spill-watch": {
+    id: "spill-watch",
+    sequence: "internals",
+    title: "Spill signals",
+    difficulty: 5,
+    goalText: "Create a wide plan and inspect spill flags on explain.",
+    intro: [
+      "Spill = write sorted/aggregated data to local disk because the in-memory sorter/agg buffer is full.",
+      "Spill is not fatal but it turns RAM work into disk I/O. Fix: more partitions (smaller tasks), better partitioning, less skew, more executor memory, or pre-aggregation.",
+      "",
+      "repartition + groupBy + explain - check Memory for SPILLED.",
+    ].join("\n"),
+    learn: ["spill is memory pressure on sort/agg/join", "fixes: repartition, desekew, pre-aggregate"],
+    hints: ["load sales", "repartition 2", "groupBy region sum amount", "explain"],
+    commandsAllowed: 7,
+    goals: [{ type: "command", label: "explain after wide plan", head: "explain" }],
+  },
+  "tungsten-codegen": {
+    id: "tungsten-codegen",
+    sequence: "internals",
+    title: "Tungsten and codegen",
+    difficulty: 5,
+    goalText: "Contrast native ops vs UDF in explain.",
+    intro: [
+      "Tungsten: compact binary rows (UnsafeRow), off-heap friendly, whole-stage codegen generating one Java loop for many operators.",
+      "Native filter/project/agg stay inside the fused loop. A UDF splits the pipeline (row to JVM object to row).",
+      "",
+      "Run filter + explain (native), then udf + explain (non-native) and compare cost / physical lines.",
+    ].join("\n"),
+    learn: ["whole-stage codegen fuses operators", "UDFs puncture the fused pipeline"],
+    hints: ["load sales", "udf tax amount", "explain"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "udf present", op: "udf" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "aqe-view": {
+    id: "aqe-view",
+    sequence: "internals",
+    title: "Adaptive execution",
+    difficulty: 4,
+    goalText: "Explain a shuffle plan and note where AQE would kick in.",
+    intro: [
+      "AQE (spark.sql.adaptive.enabled=true by default since 3.2) re-optimizes at stage boundaries using runtime stats.",
+      "It can: coalesce small shuffle partitions, convert sort-merge to broadcast, split skewed joins.",
+      "",
+      "You cannot toggle real AQE here - read the physical sketch and name which rule would fire on this plan (SMJ to BHJ when one side is tiny).",
+    ].join("\n"),
+    learn: ["AQE re-plans at stage boundaries", "auto SMJ to broadcast and partition coalescing"],
+    hints: ["load users", "join campaigns on id", "explain"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "join present", op: "join" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "formats-cost": {
+    id: "formats-cost",
+    sequence: "data",
+    title: "File format cost",
+    difficulty: 4,
+    goalText: "Load a table and explain the FileScan.",
+    intro: [
+      "CSV/JSON: text parse, no column prune, no stats. Parquet/ORC: columnar, compressed, min/max stats so predicate pushdown reaches the scan.",
+      "Delta/Iceberg/Hudi add ACID, time travel, Z-ordering on top of Parquet.",
+      "",
+      "Physical sketch starts with FileScan parquet - that is the cheapest scan. Prefer columnar for analytics.",
+    ].join("\n"),
+    learn: ["columnar formats enable prune + pushdown", "FileScan shows the source format"],
+    hints: ["load sales", "explain"],
+    commandsAllowed: 4,
+    goals: [{ type: "command", label: "explain FileScan", head: "explain" }],
+  },
+  "schema-strict": {
+    id: "schema-strict",
+    sequence: "data",
+    title: "Schema discipline",
+    difficulty: 3,
+    goalText: "Project a strict schema early.",
+    intro: [
+      "schema() prints the inferred/declared types. Production pipelines should declare schemas (not infer) to avoid silent type drift and per-job inference cost.",
+      "select a narrow set of columns immediately after read - that is projection pushdown in action.",
+    ].join("\n"),
+    learn: ["declare schemas in production", "projection pushdown starts at the scan"],
+    hints: ["load sales", "schema", "select region, amount", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "command", label: "schema", head: "schema" },
+      { type: "planHas", label: "select present", op: "select" },
+    ],
+  },
+  "write-partitioned": {
+    id: "write-partitioned",
+    sequence: "data",
+    title: "Partitioned writes",
+    difficulty: 4,
+    goalText: "Prepare a narrow frame and write it.",
+    intro: [
+      "Write partitioning (by region/dt) makes later reads cheap: partition pruning skips whole directories.",
+      "Too many distinct keys = small-file explosion. Too few = heavy scans. Aim for balanced directories.",
+      "Modes: errorifexists (default), overwrite, append, ignore - pick explicitly in production.",
+    ].join("\n"),
+    learn: ["partitioned writes enable read pruning", "balance directory count vs query patterns"],
+    hints: ["load sales", "select region, amount", "write"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "command", label: "write", head: "write" },
+      { type: "planHas", label: "select present", op: "select" },
+    ],
+  },
+
+  "stream-batch": {
+    id: "stream-batch",
+    sequence: "streaming",
+    title: "Micro-batch model",
+    difficulty: 5,
+    goalText: "Build the same DataFrame plan streaming would run per batch.",
+    intro: [
+      "Structured Streaming: treat a stream as an unbounded table. Each trigger (micro-batch) runs the same DataFrame plan on new rows.",
+      "Source then streaming DF then sink with outputMode (append/update/complete) + checkpoint for exactly-once.",
+      "",
+      "Practical move here: build the batch plan (filter to groupBy). That plan is exactly one micro-batch body. Streaming does not invent new operators - it re-executes this plan.",
+    ].join("\n"),
+    learn: [
+      "streaming = repeated batch plans on unbounded input",
+      "checkpoint + outputMode define delivery semantics",
+    ],
+    hints: ["load events", "filter event == purchase", "groupBy event count *", "explain"],
+    commandsAllowed: 7,
+    goals: [
+      { type: "planHas", label: "filter", op: "filter" },
+      { type: "planHas", label: "groupBy (agg per batch)", op: "groupBy" },
+      { type: "command", label: "explain the batch plan", head: "explain" },
+    ],
+  },
+  "stream-watermark": {
+    id: "stream-watermark",
+    sequence: "streaming",
+    title: "Watermarks",
+    difficulty: 5,
+    goalText: "Order events by time and explain late-data handling.",
+    intro: [
+      "withWatermark(eventTime, 10 minutes) tells the engine: ignore rows later than max(eventTime)-delay for stateful ops.",
+      "Without watermark, state grows forever on keys. With it, state is bounded and late data is dropped (or written to a side output).",
+      "",
+      "sort events by ts then explain - time is the watermark axis in real streaming aggregations.",
+    ].join("\n"),
+    learn: ["watermark bounds state and drops very late rows", "event-time order is the correctness axis"],
+    hints: ["load events", "sort ts", "explain"],
+    commandsAllowed: 5,
+    goals: [
+      { type: "planHas", label: "sort by time", op: "sort" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "ml-features": {
+    id: "ml-features",
+    sequence: "mlops",
+    title: "Feature stage",
+    difficulty: 4,
+    goalText: "Build feature columns with withColumn + select.",
+    intro: [
+      "ML pipelines are Spark jobs. Feature transformers are DataFrame ops: withColumn, select, explode, UDF (when unavoidable).",
+      "Keep features deterministic and versioned - a training/serving skew is a plan diff, not a mystery.",
+      "",
+      "withColumn tipped amount * 1.1 then select region, tipped - that is your feature frame.",
+    ].join("\n"),
+    learn: ["features are DataFrame transforms", "deterministic features prevent train/serve skew"],
+    hints: ["load sales", "withColumn tipped amount * 1.1", "select region, tipped", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "withColumn feature", op: "withColumn" },
+      { type: "planHas", label: "select feature frame", op: "select" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+  "ml-pipeline": {
+    id: "ml-pipeline",
+    sequence: "mlops",
+    title: "Pipeline mental model",
+    difficulty: 5,
+    goalText: "Assemble transform + aggregate as a reusable pipeline plan.",
+    intro: [
+      "MLlib Pipeline: Transformers (DataFrame to DataFrame) + Estimators (fit then Model). CrossValidator/TrainValidationSplit wrap estimators.",
+      "The same code path runs in training and batch scoring. Streaming scoring reuses the transform stage per micro-batch.",
+      "",
+      "filter to withColumn to groupBy is a miniature pipeline. In production each of these would be a named stage with params in params.yaml / MLflow.",
+    ].join("\n"),
+    learn: ["Pipeline = chained Transformers + Estimator", "train/serve share one transform plan"],
+    hints: ["load sales", "filter amount > 20", "withColumn tipped amount * 1.1", "groupBy region sum tipped", "show"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "planHas", label: "transform", op: "filter" },
+      { type: "planHas", label: "feature", op: "withColumn" },
+      { type: "planHas", label: "aggregate", op: "groupBy" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
+  "ops-skew-fix": {
+    id: "ops-skew-fix",
+    sequence: "ops",
+    title: "Mitigate skew",
+    difficulty: 5,
+    goalText: "Repartition before aggregate and explain the new stage shape.",
+    intro: [
+      "Concrete skew playbook: (1) detect via Spark UI task time distribution (2) repartition on a salted key or a finer key (3) pre-aggregate partial sums (4) broadcast a shrunk dimension (5) enable AQE skew join.",
+      "repartition 4 then groupBy - more reducers shorten the straggler. explain shows the extra stage - that is the cost of desekewing.",
+    ].join("\n"),
+    learn: [
+      "detect skew in the UI, fix via salt/pre-agg/repartition",
+      "desekew costs an extra stage - worth it when stragglers dominate",
+    ],
+    hints: ["load sales", "repartition 4", "groupBy region sum amount", "explain"],
+    commandsAllowed: 7,
+    goals: [
+      { type: "planHas", label: "repartition", op: "repartition" },
+      { type: "planHas", label: "groupBy", op: "groupBy" },
+      { type: "command", label: "explain", head: "explain" },
+    ],
+  },
+  "ops-retry": {
+    id: "ops-retry",
+    sequence: "ops",
+    title: "Retries and debugging",
+    difficulty: 4,
+    goalText: "Use explain as the first debugging tool on a failing shape.",
+    intro: [
+      "Executor loss leads to stage retry (unless output was committed). Speculative execution reruns stragglers on idle executors.",
+      "Debug order: (1) explain plan (2) Spark UI stages/tasks (3) storage tab for cache (4) SQL tab for AQE decisions (5) event log history.",
+      "",
+      "Build any non-trivial plan and explain - treat explain as the first line of production debug.",
+    ].join("\n"),
+    learn: ["stage retries and speculation cover flakiness", "debug order starts at explain + UI"],
+    hints: ["load sales", "join users on user_id", "explain"],
+    commandsAllowed: 5,
+    goals: [{ type: "command", label: "explain as debug tool", head: "explain" }],
+  },
 };
 
 /**
@@ -399,15 +820,13 @@ export function allLevels() {
   for (let i = 0; i < SEQUENCES.length; i += 1) {
     const seq = SEQUENCES[i];
     for (let j = 0; j < seq.levels.length; j += 1) {
-      out.push(LEVELS[seq.levels[j]]);
+      if (LEVELS[seq.levels[j]]) out.push(LEVELS[seq.levels[j]]);
     }
   }
   return out;
 }
 
 /**
- * Next unsolved-friendly level after id.
- *
  * @param {string} id
  * @returns {any|null}
  */
@@ -420,11 +839,9 @@ export function getNextLevel(id) {
 }
 
 /**
- * Evaluate goal list against session + level.
- *
  * @param {any} level
  * @param {object} state
- * @returns {{ met: boolean, checks: { label: string, done: boolean, detail: string, pending: boolean }[] }}
+ * @returns {{ met: boolean, checks: any[] }}
  */
 export function checkGoals(level, state) {
   const goals = level.goals || [];
@@ -449,8 +866,6 @@ export function checkGoals(level, state) {
 }
 
 /**
- * Evaluate one goal predicate.
- *
  * @param {any} g
  * @param {object} state
  * @returns {{ done: boolean, detail: string }}
@@ -507,8 +922,6 @@ function evalGoal(g, state) {
 }
 
 /**
- * List op names on the plan (excluding source).
- *
  * @param {any} df
  * @returns {string[]}
  */

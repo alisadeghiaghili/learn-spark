@@ -104,3 +104,55 @@ test("planSpine is source-to-tip", () => {
   assert.equal(spine[spine.length - 1].op, "filter");
   assert.equal(materialize(df.plan).rows.length > 0, true);
 });
+
+
+test("window rank keeps row grain", async () => {
+  const { windowFn } = await import("../src/engine/plan.js");
+  let df = createSource("sales");
+  df = windowFn(df, "rank", "amount", ["region"], "amount", true);
+  const result = run(df);
+  assert.equal(result.rows.length, 12);
+  assert.ok(result.columns.some((c) => c.indexOf("rank_over_region") === 0));
+});
+
+test("explode expands comma tags", async () => {
+  const { explode } = await import("../src/engine/plan.js");
+  let df = createSource("events");
+  df = explode(df, "tags");
+  const result = run(df);
+  assert.ok(result.rows.length > 6);
+  assert.ok(result.rows.some((r) => r.tags === "mobile"));
+});
+
+test("join left keeps unmatched left rows", async () => {
+  let df = createSource("campaigns");
+  df = join(df, "users", "user_id", "left", "sort-merge");
+  const result = run(df);
+  assert.equal(result.rows.length, 4);
+  const orphan = result.rows.find((r) => r.user_id === 99);
+  assert.ok(orphan);
+});
+
+test("broadcast join marks physical plan", async () => {
+  let df = createSource("sales");
+  df = join(df, "users", "user_id", "inner", "broadcast");
+  const result = run(df);
+  assert.ok(result.physical.indexOf("BroadcastHashJoin") !== -1);
+  assert.ok(result.stages.length >= 1);
+});
+
+test("udf adds column and flags non-native cost", async () => {
+  const { udf } = await import("../src/engine/plan.js");
+  let df = createSource("sales");
+  df = udf(df, "upper", "region");
+  const result = run(df);
+  assert.ok(result.physical.indexOf("non-native") !== -1);
+  assert.ok(result.rows[0].region_upper === "WEST" || result.rows[0].region_upper === "EAST");
+});
+
+test("memory block is present on run", () => {
+  const result = run(createSource("sales"));
+  assert.ok(result.memory);
+  assert.ok(typeof result.memory.executorMb === "number");
+  assert.ok(result.physical.indexOf("FileScan") !== -1);
+});

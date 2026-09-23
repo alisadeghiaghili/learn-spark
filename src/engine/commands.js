@@ -6,15 +6,21 @@ import {
   cacheFrame,
   coalesce,
   createSource,
+  distinct,
+  drop,
+  explode,
   filter,
   groupBy,
   join,
   limit,
   planSpine,
   repartition,
+  sample,
   select,
   sort,
+  udf,
   unpersistFrame,
+  windowFn,
   withColumn,
 } from "./plan.js";
 import { materialize, run as runFrame } from "./execute.js";
@@ -31,7 +37,10 @@ const HELP_TEXT = [
   "  sort <col> [desc]            lazy sort",
   "  limit <n>                    lazy limit",
   "  groupBy <keys> <fn> [col]    wide aggregate (sum|count|avg|min|max)",
-  "  join <table> on <key>        wide join",
+  "  join <table> on <key> [inner|left|right|full] [broadcast|sort-merge]",
+  "  window <fn> [col] over <partCol> <orderBy> [desc]",
+  "  explode <col> | drop <col> | distinct | sample <frac>",
+  "  udf <upper|double|tax|prefix> <col>",
   "  repartition <n> | coalesce <n>",
   "  cache | unpersist",
   "  show | count | schema | columns | explain | collect | write",
@@ -217,8 +226,18 @@ export function execute(state, line, ctx = {}) {
         if (parts[i].toLowerCase() === "on") onIdx = i;
       }
       const on = onIdx >= 0 ? parts[onIdx + 1] : parts[2];
-      if (!on) throw new Error("usage: join <table> on <key>");
-      const nextDf = join(df, table, on);
+      if (!on) throw new Error("usage: join <table> on <key> [inner|left|right|full] [broadcast|sort-merge]");
+      const extra = parts.slice((onIdx >= 0 ? onIdx + 2 : 3));
+      let joinType = "inner";
+      let strategy = "auto";
+      for (let i = 0; i < extra.length; i += 1) {
+        const t = extra[i].toLowerCase();
+        if (t === "inner" || t === "left" || t === "right" || t === "full") joinType = t;
+        if (t === "broadcast" || t === "sort-merge" || t === "sortmerge") {
+          strategy = t === "sortmerge" ? "sort-merge" : t;
+        }
+      }
+      const nextDf = join(df, table, on, joinType, strategy);
       outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide / shuffle)" });
       return commit(state, command, "transform", nextDf, outputs);
     }
@@ -248,6 +267,63 @@ export function execute(state, line, ctx = {}) {
       const df = requireDf(state);
       const nextDf = unpersistFrame(df);
       outputs.push({ kind: "success", text: "Unpersisted cache flag." });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+
+    if (head === "drop") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: drop <col>");
+      const nextDf = drop(df, col);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (lazy)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "distinct") {
+      const df = requireDf(state);
+      const nextDf = distinct(df);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide / shuffle)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "sample") {
+      const df = requireDf(state);
+      const frac = Number(parts[1] || "0.5");
+      const nextDf = sample(df, frac);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (lazy)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "explode") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: explode <col>");
+      const nextDf = explode(df, col);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (lazy, nested -> rows)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "udf") {
+      const df = requireDf(state);
+      const name = requireArg(parts, 1, "usage: udf <upper|double|tax|prefix> <col>");
+      const col = requireArg(parts, 2, "usage: udf <upper|double|tax|prefix> <col>");
+      const nextDf = udf(df, name, col);
+      outputs.push({
+        kind: "success",
+        text: "+ " + planTip(nextDf) + "  (lazy UDF — black box to Catalyst)",
+      });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "window") {
+      const df = requireDf(state);
+      // window <fn> [col] over <partCol> <orderBy> [desc]
+      const rest = parts.slice(1);
+      const overIdx = rest.findIndex(function (p) { return p.toLowerCase() === "over"; });
+      if (overIdx < 1) throw new Error("usage: window <fn> [col] over <partCol> <orderBy> [desc]");
+      const left = rest.slice(0, overIdx);
+      const right = rest.slice(overIdx + 1);
+      const fn = left[0];
+      const col = left.length > 1 ? left[1] : null;
+      if (right.length < 2) throw new Error("usage: window <fn> [col] over <partCol> <orderBy> [desc]");
+      const partCol = right[0];
+      const orderBy = right[1];
+      const desc = (right[2] || "").toLowerCase() === "desc";
+      const nextDf = windowFn(df, fn, col, [partCol], orderBy, desc);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (narrow window)" });
       return commit(state, command, "transform", nextDf, outputs);
     }
 
@@ -402,8 +478,12 @@ function explainText(df, result) {
   const stages = result.stages.map(function (s, i) {
     return "  Stage " + i + ": " + s.ops.join(" -> ") + (s.wide ? "  (post-shuffle)" : "");
   });
+  const mem = result.memory || {};
   return "== Parsed Logical Plan ==\n" + lines.join("\n") +
+    "\n\n== Physical Plan (sketch) ==\n  " + String(result.physical || "").split("\n").join("\n  ") +
     "\n\n== Stages ==\n" + stages.join("\n") +
+    "\n\n== Memory ==\n  executor=" + (mem.executorMb || "?") + "MB peak=" + (mem.peakMb || 0) +
+    "MB spill=" + (mem.spillMb || 0) + "MB" + (mem.spilled ? " [SPILLED]" : "") +
     "\n\nrows=" + result.rows.length + " partitions=" + result.partitions + " cost=" + result.computeCost;
 }
 
