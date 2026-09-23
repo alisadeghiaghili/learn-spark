@@ -1,0 +1,12 @@
+{
+  "name": "learn-spark",
+  "version": "0.1.0",
+  "description": "An interactive Apache Spark visualization and tutorial sandbox",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/engine.test.js tests/levels.test.js",
+    "check": "node --check src/engine/plan.js && node --check src/engine/execute.js && node --check src/engine/expr.js && node --check src/engine/commands.js && node --check src/game/levels.js && node --check src/ui/app.js && node --check src/ui/viz.js"
+  },
+  "license": "MIT",
+  "private": true
+}

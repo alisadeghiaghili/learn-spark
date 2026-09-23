@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>learnSpark — interactive Apache Spark tutorial</title>
+  <link rel="stylesheet" href="./assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">learn<span>Spark</span></div>
+      <div id="mode-pill" class="mode-pill on">SANDBOX</div>
+      <div id="level-title" class="mode-pill">free play</div>
+      <div class="top-actions">
+        <span id="progress" class="progress">0/12 levels</span>
+        <button class="btn" id="btn-levels" type="button">Levels</button>
+        <button class="btn" id="btn-sandbox" type="button">Sandbox</button>
+        <button class="btn" id="btn-reset" type="button">Reset</button>
+      </div>
+    </header>
+
+    <aside class="left" id="level-rail"></aside>
+
+    <main class="main">
+      <section class="panel">
+        <div class="panel-head">Job DAG <span class="tag" id="dag-meta">idle</span></div>
+        <div class="panel-body">
+          <svg id="dag-svg" viewBox="0 0 800 240" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8b99"></path>
+              </marker>
+            </defs>
+            <g id="dag-root"></g>
+          </svg>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">Partitions / Preview <span class="tag" id="part-meta">no data</span></div>
+        <div class="panel-body" id="preview-body">
+          <div class="parts" id="parts"></div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="right" id="right-rail">
+      <div class="card">
+        <h3 id="card-title">Sandbox</h3>
+        <p id="card-body">Type commands below. Try <code>load sales</code> then <code>show</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Goals</h3>
+        <div id="goals"></div>
+      </div>
+      <div class="card">
+        <h3>Session</h3>
+        <div class="stats">
+          <div class="stat"><div class="k">commands</div><div class="v" id="st-cmds">0</div></div>
+          <div class="stat"><div class="k">actions</div><div class="v" id="st-actions">0</div></div>
+          <div class="stat"><div class="k">lazy ops</div><div class="v" id="st-lazy">0</div></div>
+          <div class="stat"><div class="k">cost</div><div class="v" id="st-cost">–</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Commands</h3>
+        <pre id="cmd-help">help</pre>
+      </div>
+    </aside>
+
+    <section class="term">
+      <div id="term-out"></div>
+      <div class="term-input-row">
+        <span class="prompt">spark&gt;</span>
+        <input id="term-in" autocomplete="off" spellcheck="false" placeholder="load sales" />
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="modal">
+    <div class="modal" id="modal-box">
+      <h2 id="modal-title"></h2>
+      <div class="body" id="modal-body"></div>
+      <div class="actions">
+        <button class="btn" id="modal-secondary" type="button"></button>
+        <button class="btn primary" id="modal-primary" type="button"></button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/ui/app.js"></script>
+</body>
+</html>

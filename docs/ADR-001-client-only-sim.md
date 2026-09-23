@@ -1,0 +1,33 @@
+# ADR-001: Client-only Spark simulator
+
+## Status
+
+Accepted
+
+## Context
+
+LearnGitBranching succeeds because it is a 100% client-side visualizer with no backend. learnSpark must teach Spark's execution model (lazy evaluation, stages, shuffles, caching, partitions) without requiring a cluster or JVM in the browser.
+
+## Decision
+
+Implement a **deterministic in-browser row engine** that:
+
+1. Records a logical plan as a linked operator list (lineage).
+2. Treats `filter` / `select` / `withColumn` / `sort` / `limit` as **transformations** (lazy).
+3. Treats `show` / `count` / `collect` / `write` / `sparksql` results as **actions** that materialize.
+4. Splits plans at wide operators (`groupBy`, `join`, `repartition`) into **stages** with shuffle boundaries.
+5. Models partitions as row buckets; `repartition` / `coalesce` change bucket count.
+6. Models `cache` / `unpersist` as plan short-circuits with a cost counter (recompute avoided).
+
+Ship as static ES modules + CSS + SVG. No bundler required for local preview.
+
+## Consequences
+
+- Fast iteration, trivial deploy, offline-friendly.
+- Semantics are pedagogical, not a Spark compatibility layer.
+- Complex features (AQE, spill, broadcast hints as cost models) stay out of scope until the core loop is solid.
+
+## Alternatives considered
+
+- **Pyodide / real Spark**: too heavy, slow cold start, fails the "open and play" bar.
+- **Server-side Spark cluster**: contradicts the LGB product model and adds ops burden.
