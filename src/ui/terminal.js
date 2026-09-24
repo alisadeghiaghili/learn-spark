@@ -35,7 +35,7 @@ const BASE_COMMANDS = [
   "drop ts",
   "distinct",
   "sample 0.5",
-  "set executor.mb 1",
+  "set executor.mb 0.001",
   "set broadcast.threshold 10",
   "set udf.mode python",
   "set speculate on",

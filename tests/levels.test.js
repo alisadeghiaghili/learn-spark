@@ -57,7 +57,7 @@ const SOLUTIONS = {
   "ml-pipeline": ["load sales", "filter amount > 20", "withColumn tipped amount * 1.1", "groupBy region sum tipped", "show"],
   "ops-skew-fix": ["load sales", "repartition 4", "groupBy region sum amount", "explain"],
   "ops-retry": ["load sales", "join users on user_id", "explain"],
-  "lab-spill": ["set executor.mb 1", "load sales", "groupBy region sum amount", "explain"],
+  "lab-spill": ["set executor.mb 0.001", "load sales", "groupBy region sum amount", "explain"],
   "lab-salt": ["load sales", "salt user_id 4", "groupBy region sum amount", "explain"],
   "lab-broadcast": ["load sales", "join users on user_id broadcast", "explain"],
   "lab-udf-modes": ["set udf.mode python", "load sales", "udf upper region", "explain"],

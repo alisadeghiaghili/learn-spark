@@ -35,6 +35,7 @@ import {
   withColumn,
 } from "./plan.js";
 import { applySetting, describeSettings, resetSettings, settings as getSettings } from "./settings.js";
+import { parseSelect } from "./sql.js";
 import { materialize, run as runFrame } from "./execute.js";
 import { listDatasets } from "./datasets.js";
 
@@ -594,47 +595,20 @@ function done(state, command, kind, outputs) {
  * @returns {any}
  */
 function sqlToOps(sql) {
-  const s = sql.trim().replace(/;$/, "");
-  const re = /^select\s+(.+?)\s+from\s+([a-zA-Z0-9_]+)(?:\s+where\s+(.+?))?(?:\s+group\s+by\s+(.+?))?(?:\s+order\s+by\s+(.+))?$/i;
-  const m = s.match(re);
-  if (!m) {
-    throw new Error("sparksql supports: SELECT cols FROM table [WHERE expr] [GROUP BY cols] [ORDER BY col]");
-  }
-  const cols = m[1].split(",").map(function (x) { return x.trim(); });
-  const table = m[2];
-  let frame = createSource(table);
-  if (m[3]) frame = filter(frame, m[3]);
-  if (m[4]) {
-    const keys = m[4].split(",").map(function (x) { return x.trim(); }).filter(Boolean);
-    let aggCol = null;
-    for (let i = 0; i < cols.length; i += 1) {
-      if (cols[i].indexOf("(") !== -1) aggCol = cols[i];
-    }
-    if (aggCol) {
-      const am = aggCol.match(/(sum|count|avg|min|max)\((.+)\)/i);
-      if (am) frame = groupBy(frame, keys, am[1].toLowerCase(), am[2] === "*" ? null : am[2]);
-      else frame = groupBy(frame, keys, "count", null);
-    } else {
-      frame = groupBy(frame, keys, "count", null);
-    }
+  const ast = parseSelect(sql);
+  let frame = createSource(ast.table);
+  if (ast.where) frame = filter(frame, ast.where);
+  if (ast.groupBy && ast.groupBy.length) {
+    const first = ast.aggs[0] || { fn: "count", col: null };
+    frame = groupBy(frame, ast.groupBy, first.fn, first.col);
     return frame;
   }
-  if (cols.length === 1 && cols[0] === "*") return frame;
-  const projected = [];
-  for (let i = 0; i < cols.length; i += 1) {
-    const c = cols[i];
-    if (c.indexOf("(") === -1) projected.push(c);
-  }
-  return select(frame, projected);
+  if (ast.orderBy) frame = sort(frame, ast.orderBy.col, ast.orderBy.desc);
+  if (ast.star || !ast.cols.length) return frame;
+  const projected = ast.cols.filter(function (c) { return c.indexOf("(") === -1; });
+  return projected.length ? select(frame, projected) : frame;
 }
 
-/**
- * Pretty explain text.
- *
- * @param {any} df
- * @param {any} result
- * @returns {string}
- */
 function explainText(df, result) {
   const lines = planSpine(df.plan).map(function (n) {
     return "  " + n.label + (n.wide ? "  [WIDE/SHUFFLE]" : "");

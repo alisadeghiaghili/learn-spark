@@ -53,7 +53,7 @@ export function applySetting(key, raw) {
   const k = String(key || "").toLowerCase();
   const v = String(raw || "").trim();
   if (k === "executor.mb" || k === "executor_mb") {
-    settings.executorMb = Math.max(1, Number(v) || settings.executorMb);
+    settings.executorMb = Math.max(0.001, Number(v) || settings.executorMb);
     return "spark.executor.memory=" + settings.executorMb + "MB (simulated)";
   }
   if (k === "broadcast.threshold" || k === "broadcast_threshold") {
