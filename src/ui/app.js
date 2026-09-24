@@ -15,6 +15,7 @@ import {
 } from "./progress.js";
 import { buildShareTargets, shareWithClipboard, LIVE_URL } from "./share.js";
 import { launchConfetti, playFanfare } from "./confetti.js";
+import { describeSettings, resetSettings, settings, clusterShape } from "../engine/settings.js";
 
 const els = {
   rail: document.getElementById("level-rail"),
@@ -111,6 +112,21 @@ function render(opts) {
   els.stActions.textContent = String(game.state.actionsRun || 0);
   els.stLazy.textContent = String(game.state.transformsPending || 0);
   els.stCost.textContent = game.state.lastRun ? String(game.state.lastRun.computeCost) : "–";
+  const clusterEl = document.getElementById("cluster-meta");
+  if (clusterEl) {
+    const parts = game.state.lastRun
+      ? game.state.lastRun.partitions
+      : (game.state.df ? game.state.df.partitions : 2);
+    const shape = clusterShape(parts);
+    const mem = game.state.lastRun && game.state.lastRun.memory;
+    clusterEl.textContent =
+      shape.executors + " exec × " + shape.slots + " slots · " +
+      settings.executorMb + "MB · " +
+      (mem && mem.spilled ? "SPILL" : "ok") +
+      (game.state.lastRun && game.state.lastRun.retries ? " · retry " + game.state.lastRun.retries : "");
+  }
+  const setEl = document.getElementById("settings-line");
+  if (setEl) setEl.textContent = describeSettings();
 
   if (game.mode === "level" && game.levelId) {
     const level = LEVELS[game.levelId];
@@ -306,6 +322,7 @@ function openLevel(id) {
   game.mode = "level";
   game.levelId = id;
   game.state = createState();
+  resetSettings();
   game.offered = false;
   const level = LEVELS[id];
   terminal.clear();
@@ -328,6 +345,7 @@ function openSandbox() {
   game.mode = "sandbox";
   game.levelId = null;
   game.state = createState();
+  resetSettings();
   game.offered = false;
   terminal.clear();
   print("Sandbox mode. Tables: sales, users, products, logs.", "sys");
@@ -572,6 +590,8 @@ function boot() {
     "cache | unpersist | show | count | collect",
     "schema | columns | explain | write | sparksql ...",
     "levels | goal | hint | undo | reset | clear | next",
+    "set k v | salt | cube | approx | get | mapExplode",
+    "ml vectorize|fit|predict | stream emit|watermark | injectFail",
     "",
     "↑↓ history · Tab word complete · Esc clear",
   ].join("\n");

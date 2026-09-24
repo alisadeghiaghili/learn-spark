@@ -57,6 +57,16 @@ const SOLUTIONS = {
   "ml-pipeline": ["load sales", "filter amount > 20", "withColumn tipped amount * 1.1", "groupBy region sum tipped", "show"],
   "ops-skew-fix": ["load sales", "repartition 4", "groupBy region sum amount", "explain"],
   "ops-retry": ["load sales", "join users on user_id", "explain"],
+  "lab-spill": ["set executor.mb 1", "load sales", "groupBy region sum amount", "explain"],
+  "lab-salt": ["load sales", "salt user_id 4", "groupBy region sum amount", "explain"],
+  "lab-broadcast": ["load sales", "join users on user_id broadcast", "explain"],
+  "lab-udf-modes": ["set udf.mode python", "load sales", "udf upper region", "explain"],
+  "lab-late": ["load events", "sort ts", "stream watermark 10m", "stream emit"],
+  "lab-ml": ["load sales", "ml vectorize amount,user_id", "ml fit amount", "ml predict", "show"],
+  "lab-retry": ["set speculate on", "load sales", "injectFail 0", "show"],
+  "lab-formats": ["set format csv", "load sales", "explain"],
+  "lab-agg-mix": ["load sales", "groupBy region sum amount, count *", "show"],
+  "lab-nested": ["load events", "mapExplode tags", "show"],
 };
 
 test("every level has a known solution", () => {

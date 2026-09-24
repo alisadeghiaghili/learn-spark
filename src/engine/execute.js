@@ -5,9 +5,12 @@
 import { getDataset } from "./datasets.js";
 import { evalExpr, compareValues } from "./expr.js";
 import { planSpine, rowsBytes } from "./plan.js";
+import { settings, clusterShape } from "./settings.js";
 
 /** Simulated executor memory budget (MB) for teaching spill. */
-export const EXECUTOR_MEMORY_MB = 2;
+export function executorMemoryMb() {
+  return settings.executorMb;
+}
 
 /**
  * Materialize a plan.
@@ -32,6 +35,7 @@ export function materialize(plan) {
       partitions = Number(node.args.partitions) || 2;
       stages[stages.length - 1].ops.push(node.label);
       peakBytes = Math.max(peakBytes, rowsBytes({ rows: rows }));
+      if (rowsBytes({ rows: rows }) >= settings.executorMb * 256) spilled = true;
       continue;
     }
 
@@ -52,7 +56,9 @@ export function materialize(plan) {
 
     const est = rowsBytes({ rows: rows });
     peakBytes = Math.max(peakBytes, est);
-    if (est > EXECUTOR_MEMORY_MB * 1024 * 1024 * 0.15) {
+    // Teaching scale: tiny demos must still spill when executor.mb is shrunk.
+    const budget = settings.executorMb * 256;
+    if (est >= budget) {
       spilled = true;
     }
     if (node.cachedHint) cacheHits += 1;
@@ -65,12 +71,19 @@ export function materialize(plan) {
   }
 
   const columns = rows.length ? Object.keys(rows[0]) : inferColumns(spine);
+  const memBudget = settings.executorMb * 1024 * 1024;
+  const spilledBytes = spilled ? Math.max(1, Math.floor(peakBytes * 0.15)) : 0;
   const memory = {
-    executorMb: EXECUTOR_MEMORY_MB,
-    peakMb: Math.round(peakBytes / (1024 * 1024) * 100) / 100,
-    spillMb: spilled ? Math.max(1, Math.round(peakBytes / (1024 * 1024) * 0.1)) : 0,
+    executorMb: settings.executorMb,
+    peakMb: Math.round(peakBytes / (1024 * 1024) * 100) / 100 / 100,
+    peakKb: Math.round(peakBytes / 1024),
+    budgetKb: Math.round(memBudget / 1024),
+    spillMb: Math.round(spilledBytes / (1024 * 1024) * 100) / 100,
+    spillKb: Math.round(spilledBytes / 1024),
     spilled: spilled,
     cacheHits: cacheHits,
+    evictedCache: spilled && cacheHits >= 0,
+    cluster: clusterShape(partitions),
   };
 
   return {
@@ -94,20 +107,57 @@ function physicalPlan(spine) {
   for (let i = 0; i < spine.length; i += 1) {
     const n = spine[i];
     if (n.op === "join") {
-      const strat = n.args.strategy === "broadcast"
+      const rightMb = (n.args.rightBytes || 0) / (1024 * 1024);
+      let chosen = n.args.strategy || "auto";
+      if (chosen === "auto") {
+        chosen = settings.autoBroadcast && rightMb <= settings.broadcastThresholdMb
+          ? "broadcast"
+          : "sort-merge";
+        if (settings.aqe && chosen === "sort-merge" && rightMb * 4 <= settings.broadcastThresholdMb) {
+          chosen = "broadcast";
+          lines.push("AQE: SortMergeJoin -> BroadcastHashJoin");
+        }
+      }
+      const strat = chosen === "broadcast"
         ? "BroadcastHashJoin"
-        : n.args.strategy === "sort-merge"
+        : chosen === "sort-merge"
           ? "SortMergeJoin"
-          : "ShuffledHashJoin (auto: no broadcast size)";
-      lines.push(strat + " " + n.label);
+          : "ShuffledHashJoin";
+      lines.push(strat + " " + n.label + "  [auto=" + (n.args.strategy || "auto") + " right~" + rightMb.toFixed(3) + "MB]");
     } else if (n.op === "groupBy") {
       lines.push("HashAggregate(keys=" + n.args.keys.join(",") + ") " + n.label);
     } else if (n.op === "window") {
       lines.push("Window " + n.label);
     } else if (n.op === "udf") {
-      lines.push("MapElements udf=" + n.args.name + " [non-native]");
+      const mode = settings.udfMode;
+      const tag = mode === "native"
+        ? "codegen"
+        : mode === "pandas"
+          ? "pandas-vectorized [semi-native]"
+          : mode === "python"
+            ? "python-udf [pickle+process hop]"
+            : "jvm-udf [non-native]";
+      lines.push("MapElements udf=" + n.args.name + " mode=" + mode + " [" + tag + "]");
     } else if (n.op === "source") {
-      lines.push("FileScan " + (n.args.format || "parquet") + " " + n.label);
+      const fmt = n.args.format || settings.format || "parquet";
+      const hint = fmt === "parquet" || fmt === "orc"
+        ? "columnar prune+pushdown"
+        : fmt === "delta" || fmt === "iceberg" || fmt === "hudi"
+          ? "columnar ACID+stats"
+          : "text parse, no prune";
+      lines.push("FileScan " + fmt + " " + n.label + "  (" + hint + ")");
+    } else if (n.op === "salt") {
+      lines.push("AddSaltKey " + n.label);
+    } else if (n.op === "cube") {
+      lines.push("Expand+HashAggregate " + n.label);
+    } else if (n.op === "approx_count_distinct") {
+      lines.push("HLL_approx_count_distinct " + n.label);
+    } else if (n.op === "ml") {
+      lines.push("ML_" + n.args.stage + " " + n.label);
+    } else if (n.op === "stream") {
+      lines.push("Stream_" + n.args.phase + " " + n.label);
+    } else if (n.op === "fail") {
+      lines.push("TaskFailureInjector " + n.label);
     } else if (n.op === "sort") {
       lines.push("Sort " + n.label);
     } else if (n.op === "distinct") {
@@ -211,6 +261,76 @@ function applyOp(node, rows) {
   }
   if (node.op === "groupBy") {
     return aggregate(rows, node.args);
+  }
+  if (node.op === "cube") {
+    return cubeRows(rows, node.args);
+  }
+  if (node.op === "approx_count_distinct") {
+    const col = String(node.args.col);
+    const set = new Set(rows.map(function (r) { return String(r[col]); }));
+    return [{ approx_count_distinct: Math.round(set.size * 0.97), col: col }];
+  }
+  if (node.op === "salt") {
+    const col = String(node.args.col);
+    const n = Number(node.args.n) || 4;
+    return rows.map(function (r, i) {
+      const out = Object.assign({}, r);
+      out[col + "_salt"] = String(r[col]) + "_" + (i % n);
+      return out;
+    });
+  }
+  if (node.op === "getField") {
+    const col = String(node.args.col);
+    const field = String(node.args.field);
+    return rows.map(function (r) {
+      const src = r[col];
+      let val = null;
+      if (src && typeof src === "object") val = src[field];
+      else if (typeof src === "string" && src.indexOf("=") !== -1) {
+        const parts = src.split(",");
+        for (let i = 0; i < parts.length; i += 1) {
+          const kv = parts[i].split("=");
+          if (kv[0].trim() === field) val = kv.slice(1).join("=").trim();
+        }
+      }
+      const out = Object.assign({}, r);
+      out[col + "." + field] = val;
+      return out;
+    });
+  }
+  if (node.op === "mapExplode") {
+    const col = String(node.args.col);
+    const out = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const r = rows[i];
+      const src = r[col];
+      let pairs = [];
+      if (src && typeof src === "object") {
+        pairs = Object.keys(src).map(function (k) { return { key: k, value: src[k] }; });
+      } else if (typeof src === "string") {
+        pairs = src.split(",").map(function (s) {
+          const kv = s.split("=");
+          return { key: (kv[0] || "").trim(), value: kv.slice(1).join("=").trim() };
+        }).filter(function (p) { return p.key; });
+      }
+      for (let j = 0; j < pairs.length; j += 1) {
+        const copy = Object.assign({}, r);
+        copy.map_key = pairs[j].key;
+        copy.map_value = pairs[j].value;
+        out.push(copy);
+      }
+    }
+    return out;
+  }
+  if (node.op === "ml") {
+    return applyMl(rows, node.args);
+  }
+  if (node.op === "stream") {
+    return rows;
+  }
+  if (node.op === "fail") {
+    // failure is modeled in run() retry stats, not row shape
+    return rows;
   }
   if (node.op === "window") {
     return applyWindow(rows, node.args);
@@ -423,8 +543,9 @@ function padLeft(row, cols) {
  */
 function aggregate(rows, args) {
   const keys = args.keys;
-  const fn = String(args.fn);
-  const col = args.col && args.col !== "*" ? String(args.col) : null;
+  const aggs = args.multi && args.aggs
+    ? args.aggs
+    : [{ fn: String(args.fn), col: args.col && args.col !== "*" ? String(args.col) : null }];
   const groups = new Map();
   for (let i = 0; i < rows.length; i += 1) {
     const r = rows[i];
@@ -438,13 +559,107 @@ function aggregate(rows, args) {
     const bucket = buckets[i];
     const row = {};
     for (let j = 0; j < keys.length; j += 1) row[keys[j]] = bucket[0][keys[j]];
-    const values = col
-      ? bucket.map(function (r) { return Number(r[col]); })
-      : bucket.map(function () { return 1; });
-    row[fn + "(" + (col || "*") + ")"] = reduceAgg(fn, values);
+    for (let a = 0; a < aggs.length; a += 1) {
+      const fn = String(aggs[a].fn);
+      const col = aggs[a].col && aggs[a].col !== "*" ? String(aggs[a].col) : null;
+      const values = col
+        ? bucket.map(function (r) { return Number(r[col]); })
+        : bucket.map(function () { return 1; });
+      row[fn + "(" + (col || "*") + ")"] = reduceAgg(fn, values);
+    }
     out.push(row);
   }
   return out;
+}
+
+/**
+ * Cube/rollup via grouping-set expand then aggregate.
+ *
+ * @param {Array} rows
+ * @param {any} args
+ * @returns {Array}
+ */
+function cubeRows(rows, args) {
+  const keys = args.keys;
+  const kind = String(args.kind || "cube");
+  const fn = String(args.fn);
+  const col = args.col && args.col !== "*" ? String(args.col) : null;
+  const sets = [];
+  if (kind === "cube") {
+    // all subsets of keys
+    const n = keys.length;
+    for (let mask = 0; mask < (1 << n); mask += 1) {
+      const subset = [];
+      for (let i = 0; i < n; i += 1) if (mask & (1 << i)) subset.push(keys[i]);
+      sets.push(subset);
+    }
+  } else {
+    // rollup: suffixes
+    sets.push(keys.slice());
+    for (let i = keys.length - 1; i >= 0; i -= 1) sets.push(keys.slice(0, i));
+  }
+  const out = [];
+  for (let s = 0; s < sets.length; s += 1) {
+    const subset = sets[s];
+    const grouped = aggregate(rows, {
+      keys: subset,
+      fn: fn,
+      col: col,
+      multi: false,
+      aggs: [{ fn: fn, col: col }],
+    });
+    for (let i = 0; i < grouped.length; i += 1) {
+      const row = {};
+      for (let k = 0; k < keys.length; k += 1) {
+        row[keys[k]] = subset.indexOf(keys[k]) === -1 ? null : grouped[i][keys[k]];
+      }
+      const aggKeys = Object.keys(grouped[i]).filter(function (k) { return keys.indexOf(k) === -1; });
+      for (let a = 0; a < aggKeys.length; a += 1) row[aggKeys[a]] = grouped[i][aggKeys[a]];
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+/**
+ * Simulated ML stages: vectorize / fit / predict.
+ *
+ * @param {Array} rows
+ * @param {any} args
+ * @returns {Array}
+ */
+function applyMl(rows, args) {
+  const stage = String(args.stage);
+  if (stage === "vectorize") {
+    const cols = args.cols || [];
+    return rows.map(function (r) {
+      const out = Object.assign({}, r);
+      out.features = cols.map(function (c) { return Number(r[c]) || 0; }).join("|");
+      return out;
+    });
+  }
+  if (stage === "fit") {
+    // closed-form demo: mean of target as "model intercept"
+    const target = String(args.target || "amount");
+    let sum = 0;
+    for (let i = 0; i < rows.length; i += 1) sum += Number(rows[i][target]) || 0;
+    const mean = rows.length ? sum / rows.length : 0;
+    return rows.map(function (r) {
+      const out = Object.assign({}, r);
+      out.prediction = mean;
+      out.model_intercept = mean;
+      return out;
+    });
+  }
+  if (stage === "predict") {
+    const intercept = Number(args.intercept) || 0;
+    return rows.map(function (r) {
+      const out = Object.assign({}, r);
+      out.prediction = intercept * 1.1;
+      return out;
+    });
+  }
+  throw new Error("unknown ml stage: " + stage);
 }
 
 /**
@@ -470,12 +685,26 @@ function reduceAgg(fn, values) {
  */
 export function run(df) {
   const result = materialize(df.plan);
+  let udfPenalty = 0;
+  if (result.physical.indexOf("python-udf") !== -1) udfPenalty = 80;
+  else if (result.physical.indexOf("jvm-udf") !== -1) udfPenalty = 35;
+  else if (result.physical.indexOf("pandas") !== -1) udfPenalty = 12;
+  let fmtPenalty = 0;
+  if (result.physical.indexOf("text parse") !== -1) fmtPenalty = 25;
+  else if (result.physical.indexOf("ACID") !== -1) fmtPenalty = 2;
+  const failPenalty = result.physical.indexOf("TaskFailureInjector") !== -1
+    ? (settings.speculate ? 15 : 55)
+    : 0;
   const computeCost =
     result.stages.length * 10 +
     result.rows.length +
     (result.memory.spilled ? 40 : 0) +
-    (result.physical.indexOf("non-native") !== -1 ? 15 : 0);
+    udfPenalty +
+    fmtPenalty +
+    failPenalty;
   const fromCache = Boolean(df.cached && df.cacheKey);
+  const failed = result.physical.indexOf("TaskFailureInjector") !== -1;
+  const retries = failed ? (settings.speculate ? 1 : 2) : 0;
   return {
     rows: result.rows,
     columns: result.columns,
@@ -483,6 +712,9 @@ export function run(df) {
     stages: result.stages,
     memory: result.memory,
     physical: result.physical,
+    cluster: result.memory.cluster,
+    retries: retries,
+    speculative: settings.speculate,
     computeCost: fromCache ? Math.floor(computeCost * 0.15) : computeCost,
     fromCache: fromCache,
   };

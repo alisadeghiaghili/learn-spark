@@ -2,20 +2,29 @@
  * Level sequences, deep teaching copy, and goal predicates.
  */
 
+import { settings as engineSettings } from "../engine/settings.js";
+
+/**
+ * @returns {{ settings: any }}
+ */
+function requireSettings() {
+  return { settings: engineSettings };
+}
+
 export const SEQUENCES = [
   { id: "intro", title: "Intro", blurb: "Sources, filter, project", levels: ["welcome", "filter-tour", "project-cols"] },
   { id: "lazy", title: "Lazy evaluation", blurb: "Transforms vs actions", levels: ["lazy-build", "explain-stages"] },
   { id: "actions", title: "Actions", blurb: "show, count, collect, write", levels: ["first-action", "count-cards", "write-sink"] },
-  { id: "shuffle", title: "Shuffle & wide ops", blurb: "groupBy, join, partitions", levels: ["group-regions", "join-users", "distinct-wide"] },
+  { id: "shuffle", title: "Shuffle & wide ops", blurb: "groupBy, join, partitions", levels: ["group-regions", "join-users", "distinct-wide", "lab-agg-mix"] },
   { id: "optimize", title: "Optimize", blurb: "cache and partitioning", levels: ["cache-it", "tune-parts", "sample-limit"] },
   { id: "sql", title: "SQL & Catalyst", blurb: "Logical to physical", levels: ["sparksql-tour", "catalyst-plan", "pipeline"] },
-  { id: "joins", title: "Join strategies", blurb: "Broadcast, SMJ, outer, skew", levels: ["join-outer", "join-broadcast", "join-sortmerge", "join-skew"] },
-  { id: "analytics", title: "Analytics", blurb: "Window, nested, UDF", levels: ["window-rank", "window-running", "explode-tags", "udf-cost"] },
-  { id: "internals", title: "Internals", blurb: "Memory, spill, Tungsten", levels: ["memory-model", "spill-watch", "tungsten-codegen", "aqe-view"] },
-  { id: "data", title: "Data sources", blurb: "Formats, schema, writes", levels: ["formats-cost", "schema-strict", "write-partitioned"] },
-  { id: "streaming", title: "Streaming", blurb: "Micro-batches, watermark", levels: ["stream-batch", "stream-watermark"] },
-  { id: "mlops", title: "ML pipelines", blurb: "Feature + model stages", levels: ["ml-features", "ml-pipeline"] },
-  { id: "ops", title: "Ops & debugging", blurb: "Skew, retries, UI", levels: ["ops-skew-fix", "ops-retry"] },
+  { id: "joins", title: "Join strategies", blurb: "Broadcast, SMJ, outer, skew", levels: ["join-outer", "join-broadcast", "join-sortmerge", "join-skew", "lab-salt", "lab-broadcast"] },
+  { id: "analytics", title: "Analytics", blurb: "Window, nested, UDF", levels: ["window-rank", "window-running", "explode-tags", "udf-cost", "lab-udf-modes", "lab-nested"] },
+  { id: "internals", title: "Internals", blurb: "Memory, spill, Tungsten", levels: ["memory-model", "spill-watch", "tungsten-codegen", "aqe-view", "lab-spill"] },
+  { id: "data", title: "Data sources", blurb: "Formats, schema, writes", levels: ["formats-cost", "schema-strict", "write-partitioned", "lab-formats"] },
+  { id: "streaming", title: "Streaming", blurb: "Micro-batches, watermark", levels: ["stream-batch", "stream-watermark", "lab-late"] },
+  { id: "mlops", title: "ML pipelines", blurb: "Feature + model stages", levels: ["ml-features", "ml-pipeline", "lab-ml"] },
+  { id: "ops", title: "Ops & debugging", blurb: "Skew, retries, UI", levels: ["ops-skew-fix", "ops-retry", "lab-retry"] },
 ];
 
 export const LEVELS = {
@@ -808,6 +817,211 @@ export const LEVELS = {
     commandsAllowed: 5,
     goals: [{ type: "command", label: "explain as debug tool", head: "explain" }],
   },
+  "lab-spill": {
+    id: "lab-spill",
+    sequence: "internals",
+    title: "LAB: force a spill",
+    difficulty: 5,
+    goalText: "Shrink executor memory, run a wide plan, and catch SPILLED on explain.",
+    intro: [
+      "Lab. You control the memory budget with `set executor.mb`.",
+      "Steps: set executor.mb 1 -> load sales -> groupBy region sum amount -> explain.",
+      "When peak work exceeds ~15% of the budget the simulator flags SPILLED and raises cost.",
+      "Then `set executor.mb 32` and explain again - spill disappears. That is the production lever (more memory or smaller tasks).",
+    ].join("\n"),
+    learn: ["spill is a memory-budget signal", "smaller tasks or more memory removes spill"],
+    hints: ["set executor.mb 1", "load sales", "groupBy region sum amount", "explain"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "setting", label: "executor.mb is tiny", key: "executorMb", value: 1 },
+      { type: "command", label: "explain", head: "explain" },
+      { type: "spilled", label: "SPILLED flag on", value: true },
+    ],
+  },
+  "lab-salt": {
+    id: "lab-salt",
+    sequence: "joins",
+    title: "LAB: salt a hot key",
+    difficulty: 5,
+    goalText: "Apply salt to desekew, then aggregate and explain.",
+    intro: [
+      "Lab. Hot key `user_id=1` would own a giant reducer. `salt user_id 4` appends a bucket suffix so the key splits across reducers.",
+      "After partial aggregates on salted keys you typically re-aggregate on the raw key (map-side combine + final reduce).",
+      "Run: load sales -> salt user_id 4 -> groupBy region sum amount -> explain.",
+      "Physical sketch gains AddSaltKey before HashAggregate. That is the standard skew fix shape.",
+    ].join("\n"),
+    learn: ["salt splits hot keys across reducers", "two-phase agg restores correct totals"],
+    hints: ["load sales", "salt user_id 4", "groupBy region sum amount", "explain"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "planHas", label: "salt present", op: "salt" },
+      { type: "planHas", label: "groupBy present", op: "groupBy" },
+      { type: "command", label: "explain", head: "explain" },
+      { type: "physical", label: "AddSaltKey in physical", value: "AddSaltKey" },
+    ],
+  },
+  "lab-broadcast": {
+    id: "lab-broadcast",
+    sequence: "joins",
+    title: "LAB: broadcast threshold",
+    difficulty: 5,
+    goalText: "Tune broadcast.threshold and catch BroadcastHashJoin in physical plan.",
+    intro: [
+      "Lab. `set broadcast.threshold 10` keeps auto-broadcast on for small dims. Force `join users on user_id broadcast` and explain.",
+      "Then `set broadcast.threshold 0` and `join users on user_id` (auto) - explain should pick SortMergeJoin.",
+      "Goal: see BroadcastHashJoin in the physical sketch with an explicit broadcast join.",
+    ].join("\n"),
+    learn: ["threshold decides BHJ vs SMJ", "forcing broadcast is a hint, not a promise in real Spark"],
+    hints: ["set broadcast.threshold 10", "load sales", "join users on user_id broadcast", "explain"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "planHas", label: "join present", op: "join" },
+      { type: "physical", label: "BroadcastHashJoin chosen", value: "BroadcastHashJoin" },
+    ],
+  },
+  "lab-udf-modes": {
+    id: "lab-udf-modes",
+    sequence: "analytics",
+    title: "LAB: UDF cost modes",
+    difficulty: 5,
+    goalText: "Switch udf.mode to python and explain the cost hit.",
+    intro: [
+      "Lab. Same UDF, three price tags:",
+      "  native  - fused codegen (cheapest)",
+      "  jvm     - MapElements black box (medium)",
+      "  pandas  - vectorized batches (good compromise)",
+      "  python  - pickle + process hop (expensive)",
+      "set udf.mode python -> load sales -> udf upper region -> explain.",
+      "Physical sketch should mark python-udf and cost rises sharply.",
+    ].join("\n"),
+    learn: ["python UDFs pay pickle + process hop", "pandas UDFs are the vectorized middle ground"],
+    hints: ["set udf.mode python", "load sales", "udf upper region", "explain"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "setting", label: "udf.mode=python", key: "udfMode", value: "python" },
+      { type: "planHas", label: "udf present", op: "udf" },
+      { type: "physical", label: "python-udf marked", value: "python-udf" },
+    ],
+  },
+  "lab-late": {
+    id: "lab-late",
+    sequence: "streaming",
+    title: "LAB: watermark drops late rows",
+    difficulty: 5,
+    goalText: "Set a watermark and run a micro-batch over time-ordered events.",
+    intro: [
+      "Lab. Streaming aggregation without a watermark keeps state forever. `stream watermark 10m` bounds it.",
+      "Late rows (ts << max(eventTime) - lag) would be dropped in a real engine.",
+      "Do: load events -> sort ts -> stream watermark 10m -> stream emit.",
+      "emit materializes one micro-batch with the same plan - that is Structured Streaming's core trick.",
+    ].join("\n"),
+    learn: ["watermark bounds state and drops late data", "micro-batch reuses the batch plan"],
+    hints: ["load events", "sort ts", "stream watermark 10m", "stream emit"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "planHas", label: "sort by time", op: "sort" },
+      { type: "planHas", label: "watermark set", op: "stream" },
+      { type: "command", label: "stream emit (micro-batch)", head: "stream" },
+    ],
+  },
+  "lab-ml": {
+    id: "lab-ml",
+    sequence: "mlops",
+    title: "LAB: fit then predict",
+    difficulty: 5,
+    goalText: "Vectorize features, fit on amount, then predict.",
+    intro: [
+      "Lab. MLlib Pipeline stages are DataFrame ops:",
+      "  ml vectorize amount,user_id  - Transformer",
+      "  ml fit amount                - Estimator.fit -> Model (learns mean here)",
+      "  ml predict                   - Model.transform",
+      "Train and score share the same feature transforms - that is how you avoid train/serve skew.",
+    ].join("\n"),
+    learn: ["Transformer vs Estimator vs Model", "shared feature plan prevents skew"],
+    hints: ["load sales", "ml vectorize amount,user_id", "ml fit amount", "ml predict", "show"],
+    commandsAllowed: 10,
+    goals: [
+      { type: "planHas", label: "vectorize", op: "ml" },
+      { type: "command", label: "show predictions", head: "show" },
+    ],
+  },
+  "lab-retry": {
+    id: "lab-retry",
+    sequence: "ops",
+    title: "LAB: fail a task and retry",
+    difficulty: 5,
+    goalText: "Inject a task failure, enable speculation, and run an action.",
+    intro: [
+      "Lab. `injectFail` marks a stage as flaky. Next action models retries (2 without speculation, 1 with).",
+      "set speculate on -> load sales -> injectFail 0 -> show.",
+      "Cost penalty shrinks with speculation because a backup task can win the race. In the Spark UI you would see task attempts.",
+    ].join("\n"),
+    learn: ["stage retries absorb executor loss", "speculation races stragglers"],
+    hints: ["set speculate on", "load sales", "injectFail 0", "show"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "setting", label: "speculation on", key: "speculate", value: true },
+      { type: "planHas", label: "failure injected", op: "fail" },
+      { type: "retries", label: "retries recorded", value: 1 },
+    ],
+  },
+  "lab-formats": {
+    id: "lab-formats",
+    sequence: "data",
+    title: "LAB: CSV vs Parquet cost",
+    difficulty: 4,
+    goalText: "Compare text vs columnar FileScan in explain.",
+    intro: [
+      "Lab. set format csv -> load sales -> explain (text parse, no prune).",
+      "set format parquet -> load sales -> explain (columnar prune+pushdown).",
+      "Physical sketch labels the scan. Columnar wins on analytics because of projection + predicate pushdown + compression.",
+    ].join("\n"),
+    learn: ["text formats pay parse and lose pushdown", "columnar formats enable prune + stats"],
+    hints: ["set format csv", "load sales", "explain", "set format parquet", "load sales", "explain"],
+    commandsAllowed: 10,
+    goals: [
+      { type: "command", label: "explain under a format", head: "explain" },
+    ],
+  },
+  "lab-agg-mix": {
+    id: "lab-agg-mix",
+    sequence: "shuffle",
+    title: "LAB: multi-agg and cube",
+    difficulty: 5,
+    goalText: "Run multi-agg groupBy and cube grouping sets.",
+    intro: [
+      "Lab. One shuffle, many aggregates: `groupBy region sum amount, count *`.",
+      "Grouping sets (cube/rollup) expand rows before aggregate so you get subtotals without multiple jobs.",
+      "Try: load sales -> groupBy region sum amount, count * -> show, then cube region sum amount -> show.",
+    ].join("\n"),
+    learn: ["multi-agg amortizes one shuffle", "cube emits grouping-set subtotals"],
+    hints: ["load sales", "groupBy region sum amount, count *", "show"],
+    commandsAllowed: 8,
+    goals: [
+      { type: "planHas", label: "groupBy multi-agg", op: "groupBy" },
+      { type: "command", label: "show", head: "show" },
+      { type: "rows", label: "4 regions", value: 4 },
+    ],
+  },
+  "lab-nested": {
+    id: "lab-nested",
+    sequence: "analytics",
+    title: "LAB: mapExplode + getField",
+    difficulty: 5,
+    goalText: "Explode a map-like column and pull a field.",
+    intro: [
+      "Lab. events.tags is a map-like `k=v,k=v` string. `mapExplode tags` yields map_key/map_value rows - same as explode(map).",
+      "`get tags mobile` pulls one field like col.field on a struct.",
+      "Nested access is first-class in Spark SQL; prefer it over string splits in production schemas.",
+    ].join("\n"),
+    learn: ["mapExplode densifies maps into key/value rows", "getField is struct/map field access"],
+    hints: ["load events", "mapExplode tags", "show"],
+    commandsAllowed: 6,
+    goals: [
+      { type: "planHas", label: "mapExplode present", op: "mapExplode" },
+      { type: "command", label: "show", head: "show" },
+    ],
+  },
 };
 
 /**
@@ -917,6 +1131,25 @@ function evalGoal(g, state) {
     const n = state.lastRun ? state.lastRun.stages.length : 0;
     const done = n >= (g.value || 0);
     return { done: done, detail: "stages=" + n };
+  }
+  if (g.type === "physical") {
+    const phy = state.lastRun ? String(state.lastRun.physical || "") : "";
+    const done = phy.indexOf(g.value) !== -1;
+    return { done: done, detail: done ? "physical hit" : "missing: " + g.value };
+  }
+  if (g.type === "spilled") {
+    const done = Boolean(state.lastRun && state.lastRun.memory && state.lastRun.memory.spilled);
+    return { done: done, detail: done ? "SPILLED" : "no spill yet" };
+  }
+  if (g.type === "setting") {
+    const actual = engineSettings[g.key];
+    const done = actual === g.value || String(actual) === String(g.value);
+    return { done: done, detail: g.key + "=" + actual };
+  }
+  if (g.type === "retries") {
+    const n = state.lastRun ? state.lastRun.retries || 0 : 0;
+    const done = n >= (g.value || 1);
+    return { done: done, detail: "retries=" + n };
   }
   return { done: false, detail: "unknown goal type" };
 }

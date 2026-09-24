@@ -357,3 +357,134 @@ export function unpersistFrame(df) {
 }
 
 export { nextId, clonePlan, rowsBytes };
+
+
+/**
+ * Salt a key column to desekew (adds _salt suffix key).
+ *
+ * @param {any} df
+ * @param {string} col
+ * @param {number} [n]
+ * @returns {any}
+ */
+export function salt(df, col, n) {
+  return withOp(df, "salt", "salt(" + col + " x" + (n || 4) + ")", {
+    col: col,
+    n: n || 4,
+  }, { wide: true });
+}
+
+/**
+ * Multi-aggregate groupBy: several agg expressions.
+ *
+ * @param {any} df
+ * @param {string[]} keys
+ * @param {Array<{ fn: string, col: string|null }>} aggs
+ * @returns {any}
+ */
+export function groupByMulti(df, keys, aggs) {
+  const label = "groupBy(" + keys.join(", ") + ") " + aggs.map(function (a) {
+    return a.fn + "(" + (a.col || "*") + ")";
+  }).join(", ");
+  return withOp(df, "groupBy", label, {
+    keys: keys,
+    fn: aggs[0] && aggs[0].fn,
+    col: aggs[0] && aggs[0].col,
+    aggs: aggs,
+    multi: true,
+  }, { wide: true });
+}
+
+/**
+ * Cube / rollup grouping sets.
+ *
+ * @param {any} df
+ * @param {string[]} keys
+ * @param {string} kind cube|rollup
+ * @param {string} fn
+ * @param {string|null} col
+ * @returns {any}
+ */
+export function cubeRollup(df, keys, kind, fn, col) {
+  return withOp(df, "cube", kind + "(" + keys.join(", ") + ") " + fn + "(" + (col || "*") + ")", {
+    keys: keys,
+    kind: kind,
+    fn: fn,
+    col: col,
+  }, { wide: true });
+}
+
+/**
+ * Approximate distinct count.
+ *
+ * @param {any} df
+ * @param {string} col
+ * @returns {any}
+ */
+export function approxCountDistinct(df, col) {
+  return withOp(df, "approx_count_distinct", "approx_count_distinct(" + col + ")", { col: col }, { wide: true });
+}
+
+/**
+ * Field access on nested/map-like column: get(col, field).
+ *
+ * @param {any} df
+ * @param {string} col
+ * @param {string} field
+ * @returns {any}
+ */
+export function getField(df, col, field) {
+  return withOp(df, "getField", "get(" + col + "." + field + ")", { col: col, field: field });
+}
+
+/**
+ * Map explode: one row per key=value.
+ *
+ * @param {any} df
+ * @param {string} col
+ * @returns {any}
+ */
+export function mapExplode(df, col) {
+  return withOp(df, "mapExplode", "explode(map:" + col + ")", { col: col });
+}
+
+/**
+ * Machine learning feature + model stages (simulated estimators).
+ *
+ * @param {any} df
+ * @param {string} stage fit|predict|vectorize
+ * @param {Record<string, unknown>} args
+ * @returns {any}
+ */
+export function mlOp(df, stage, args) {
+  return withOp(df, "ml", "ml:" + stage, Object.assign({ stage: stage }, args), {
+    wide: stage === "fit",
+  });
+}
+
+/**
+ * Streaming control marker (not a row transform).
+ *
+ * @param {any} df
+ * @param {string} phase open|emit|trigger|watermark
+ * @param {Record<string, unknown>} args
+ * @returns {any}
+ */
+export function streamOp(df, phase, args) {
+  return withOp(df, "stream", "stream:" + phase, Object.assign({ phase: phase }, args), {
+    wide: false,
+  });
+}
+
+/**
+ * Mark a simulated task failure injection.
+ *
+ * @param {any} df
+ * @param {number} [taskIndex]
+ * @returns {any}
+ */
+export function injectFailure(df, taskIndex) {
+  return withOp(df, "fail", "injectFail(task=" + (taskIndex || 0) + ")", {
+    taskIndex: taskIndex || 0,
+  });
+}

@@ -18,11 +18,21 @@ import {
   sample,
   select,
   sort,
+  approxCountDistinct,
+  cubeRollup,
+  getField,
+  groupByMulti,
+  injectFailure,
+  mapExplode,
+  mlOp,
+  salt,
+  streamOp,
   udf,
   unpersistFrame,
   windowFn,
   withColumn,
 } from "./plan.js";
+import { applySetting, describeSettings, resetSettings } from "./settings.js";
 import { materialize, run as runFrame } from "./execute.js";
 import { listDatasets } from "./datasets.js";
 
@@ -41,6 +51,10 @@ const HELP_TEXT = [
   "  window <fn> [col] over <partCol> <orderBy> [desc]",
   "  explode <col> | drop <col> | distinct | sample <frac>",
   "  udf <upper|double|tax|prefix> <col>",
+  "  salt <col> [n] | cube|rollup <keys> <fn> [col] | approx <col>",
+  "  get <col> <field> | mapExplode <col>",
+  "  ml vectorize <a,b> | ml fit <target> | ml predict",
+  "  stream emit | stream watermark <n> | injectFail | set [k v]",
   "  repartition <n> | coalesce <n>",
   "  cache | unpersist",
   "  show | count | schema | columns | explain | collect | write",
@@ -194,28 +208,15 @@ export function execute(state, line, ctx = {}) {
     }
     if (head === "groupby") {
       const df = requireDf(state);
-      const rest = parts.slice(1);
-      if (rest.length < 2) throw new Error("usage: groupBy <keys> <sum|count|avg|min|max> [col]");
+      const raw = parts.slice(1).join(" ").trim();
+      if (!raw) throw new Error("usage: groupBy <keys> <sum|count|avg|min|max> [col]");
       const aggFns = ["sum", "count", "avg", "min", "max"];
-      let fn = "";
-      let col = null;
-      let keys = rest;
-      const maybeFn = rest[rest.length - 1].toLowerCase();
-      if (aggFns.indexOf(maybeFn) !== -1) {
-        fn = maybeFn;
-        keys = rest.slice(0, -1);
-      } else if (rest.length >= 3) {
-        fn = rest[rest.length - 2].toLowerCase();
-        col = rest[rest.length - 1];
-        keys = rest.slice(0, -2);
-        if (aggFns.indexOf(fn) === -1) throw new Error("unknown aggregate '" + fn + "'");
-      } else {
-        throw new Error("usage: groupBy <keys> <sum|count|avg|min|max> [col]");
-      }
-      const keyCols = keys.join(" ").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-      if (!keyCols.length) throw new Error("groupBy needs at least one key");
-      const nextDf = groupBy(df, keyCols, fn, col);
-      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide / shuffle)" });
+      const parsed = parseGroupBy(raw, aggFns);
+      const nextDf = parsed.aggs.length > 1
+        ? groupByMulti(df, parsed.keys, parsed.aggs)
+        : groupBy(df, parsed.keys, parsed.aggs[0].fn, parsed.aggs[0].col);
+      const wideLabel = parsed.aggs.length > 1 ? "  (wide / multi-agg)" : "  (wide / shuffle)";
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + wideLabel });
       return commit(state, command, "transform", nextDf, outputs);
     }
     if (head === "join") {
@@ -324,6 +325,135 @@ export function execute(state, line, ctx = {}) {
       const desc = (right[2] || "").toLowerCase() === "desc";
       const nextDf = windowFn(df, fn, col, [partCol], orderBy, desc);
       outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (narrow window)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+
+    if (head === "set") {
+      if (parts.length === 1) {
+        outputs.push({ kind: "info", text: describeSettings() });
+        return done(state, command, "meta", outputs);
+      }
+      const msg = applySetting(parts[1], parts.slice(2).join(" "));
+      outputs.push({ kind: "success", text: msg });
+      return done(state, command, "meta", outputs);
+    }
+    if (head === "resetsettings" || head === "unset") {
+      resetSettings();
+      outputs.push({ kind: "success", text: "Settings reset to defaults." });
+      return done(state, command, "meta", outputs);
+    }
+    if (head === "salt") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: salt <col> [n]");
+      const n = Number(parts[2] || "4");
+      const nextDf = salt(df, col, n);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide desekew)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "cube" || head === "rollup") {
+      const df = requireDf(state);
+      const rest = parts.slice(1);
+      const aggFns = ["sum", "count", "avg", "min", "max"];
+      let fn = "count";
+      let col = null;
+      let keys = rest;
+      if (rest.length >= 3 && aggFns.indexOf(rest[rest.length - 2].toLowerCase()) !== -1) {
+        fn = rest[rest.length - 2].toLowerCase();
+        col = rest[rest.length - 1] === "*" ? null : rest[rest.length - 1];
+        keys = rest.slice(0, -2);
+      } else if (rest.length >= 2 && aggFns.indexOf(rest[rest.length - 1].toLowerCase()) !== -1) {
+        fn = rest[rest.length - 1].toLowerCase();
+        keys = rest.slice(0, -1);
+      }
+      const keyCols = keys.join(" ").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      const nextDf = cubeRollup(df, keyCols, head, fn, col);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide / Expand)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "approx" || head === "approx_count_distinct") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: approx <col>");
+      const nextDf = approxCountDistinct(df, col);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (wide / HLL)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "get") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: get <col> <field>");
+      const field = requireArg(parts, 2, "usage: get <col> <field>");
+      const nextDf = getField(df, col, field);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (lazy nested access)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "mapexplode") {
+      const df = requireDf(state);
+      const col = requireArg(parts, 1, "usage: mapExplode <col>");
+      const nextDf = mapExplode(df, col);
+      outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (lazy map -> rows)" });
+      return commit(state, command, "transform", nextDf, outputs);
+    }
+    if (head === "ml") {
+      const df = requireDf(state);
+      const stage = requireArg(parts, 1, "usage: ml vectorize <a,b> | ml fit <target> | ml predict");
+      if (stage === "vectorize") {
+        const cols = (parts[2] || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        const nextDf = mlOp(df, "vectorize", { cols: cols });
+        outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (feature transformer)" });
+        return commit(state, command, "transform", nextDf, outputs);
+      }
+      if (stage === "fit") {
+        const target = requireArg(parts, 2, "usage: ml fit <target>");
+        const nextDf = mlOp(df, "fit", { target: target });
+        outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (estimator.fit -> model)" });
+        return commit(state, command, "transform", nextDf, outputs);
+      }
+      if (stage === "predict") {
+        const nextDf = mlOp(df, "predict", { intercept: 1 });
+        outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (model.transform)" });
+        return commit(state, command, "transform", nextDf, outputs);
+      }
+      throw new Error("usage: ml vectorize <a,b> | ml fit <target> | ml predict");
+    }
+    if (head === "stream") {
+      const sub = requireArg(parts, 1, "usage: stream emit | stream watermark <n>");
+      if (sub === "emit" || sub === "microbatch" || sub === "trigger") {
+        const df = requireDf(state);
+        // treat as action-ish: materialize current plan as one micro-batch
+        const result = runFrame(df);
+        outputs.push({
+          kind: "table",
+          columns: result.columns,
+          rows: result.rows.slice(0, 10),
+          text: "micro-batch #" + (state.actionsRun + 1) + " -> " + result.rows.length + " rows  (same plan re-run on new data)",
+        });
+        const next = Object.assign({}, state, {
+          actionsRun: state.actionsRun + 1,
+          transformsPending: 0,
+          lastRun: result,
+          history: state.history.concat([{ command: command, kind: "action", df: state.df }]),
+          commandsRun: state.commandsRun.concat([command]),
+        });
+        return { ok: true, outputs: outputs, state: next, command: command, kind: "action" };
+      }
+      if (sub === "watermark") {
+        const df = requireDf(state);
+        const lag = requireArg(parts, 2, "usage: stream watermark <n>   e.g. stream watermark 10m");
+        const nodeDf = streamOp(df, "watermark", { lag: lag });
+        outputs.push({
+          kind: "success",
+          text: "watermark(eventTime, " + lag + ") — state bounded; rows later than max- lag are dropped.",
+        });
+        return commit(state, command, "transform", nodeDf, outputs);
+      }
+      throw new Error("usage: stream emit | stream watermark <n>");
+    }
+    if (head === "injectfail" || head === "fail") {
+      const df = requireDf(state);
+      const nextDf = injectFailure(df, Number(parts[1] || "0"));
+      outputs.push({
+        kind: "success",
+        text: "Injected task failure. speculate=" + "see `set speculate on` — retries modeled on next action.",
+      });
       return commit(state, command, "transform", nextDf, outputs);
     }
 
@@ -482,8 +612,10 @@ function explainText(df, result) {
   return "== Parsed Logical Plan ==\n" + lines.join("\n") +
     "\n\n== Physical Plan (sketch) ==\n  " + String(result.physical || "").split("\n").join("\n  ") +
     "\n\n== Stages ==\n" + stages.join("\n") +
-    "\n\n== Memory ==\n  executor=" + (mem.executorMb || "?") + "MB peak=" + (mem.peakMb || 0) +
-    "MB spill=" + (mem.spillMb || 0) + "MB" + (mem.spilled ? " [SPILLED]" : "") +
+    "\n\n== Memory ==\n  executor=" + (mem.executorMb || "?") + "MB peakKb=" + (mem.peakKb || 0) +
+    " spillKb=" + (mem.spillKb || 0) + (mem.spilled ? " [SPILLED]" : "") +
+    " cluster=" + (mem.cluster ? mem.cluster.executors + " executors x " + mem.cluster.slots + " slots" : "?") +
+    "\n== Settings ==\n  " + describeSettings() +
     "\n\nrows=" + result.rows.length + " partitions=" + result.partitions + " cost=" + result.computeCost;
 }
 
@@ -570,6 +702,66 @@ function commit(state, command, kind, df, outputs) {
     commandsRun: state.commandsRun.concat([command]),
   };
   return { ok: true, outputs: outputs, state: next, command: command, kind: kind };
+}
+
+/**
+ * Parse groupBy arguments into keys + one or more aggregations.
+ *
+ * @param {string} raw
+ * @param {string[]} aggFns
+ * @returns {{ keys: string[], aggs: Array<{ fn: string, col: string|null }> }}
+ */
+function parseGroupBy(raw, aggFns) {
+  // Normalize commas used as agg separators: "sum amount, count *"
+  const chunks = raw.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+  if (chunks.length > 1 && chunks.some(function (c) {
+    const t0 = c.split(/\s+/)[0].toLowerCase();
+    return aggFns.indexOf(t0) !== -1;
+  })) {
+    // first chunk: "<keys...> <fn> <col>"
+    const first = chunks[0].split(/\s+/);
+    let cut = -1;
+    for (let i = 0; i < first.length; i += 1) {
+      if (aggFns.indexOf(first[i].toLowerCase()) !== -1) {
+        cut = i;
+        break;
+      }
+    }
+    if (cut < 1) throw new Error("usage: groupBy <keys> <sum|count|avg|min|max> [col]");
+    const keys = first.slice(0, cut);
+    const aggs = [];
+    const fn0 = first[cut].toLowerCase();
+    const col0toks = first.slice(cut + 1);
+    aggs.push({
+      fn: fn0,
+      col: !col0toks.length || col0toks[0] === "*" ? null : col0toks.join(" ").replace(/,$/, ""),
+    });
+    for (let i = 1; i < chunks.length; i += 1) {
+      const toks = chunks[i].split(/\s+/);
+      const fn = (toks[0] || "").toLowerCase();
+      if (aggFns.indexOf(fn) === -1) continue;
+      const colTok = toks.slice(1).join(" ");
+      aggs.push({ fn: fn, col: !colTok || colTok === "*" ? null : colTok });
+    }
+    return { keys: keys, aggs: aggs };
+  }
+
+  const toks = raw.split(/\s+/);
+  let cut = -1;
+  for (let i = 0; i < toks.length; i += 1) {
+    if (aggFns.indexOf(toks[i].toLowerCase()) !== -1) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut < 1) throw new Error("usage: groupBy <keys> <sum|count|avg|min|max> [col]");
+  const keys = toks.slice(0, cut).join(" ").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+  const fn = toks[cut].toLowerCase();
+  const colTok = toks.slice(cut + 1).join(" ").replace(/,$/, "");
+  return {
+    keys: keys,
+    aggs: [{ fn: fn, col: !colTok || colTok === "*" ? null : colTok }],
+  };
 }
 
 /**

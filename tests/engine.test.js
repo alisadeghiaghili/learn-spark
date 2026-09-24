@@ -156,3 +156,92 @@ test("memory block is present on run", () => {
   assert.ok(typeof result.memory.executorMb === "number");
   assert.ok(result.physical.indexOf("FileScan") !== -1);
 });
+
+
+test("settings control spill and broadcast choice", async () => {
+  const { applySetting, resetSettings, settings } = await import("../src/engine/settings.js");
+  const { groupBy } = await import("../src/engine/plan.js");
+  resetSettings();
+  applySetting("executor.mb", "1");
+  let df = createSource("sales");
+  df = groupBy(df, ["region"], "sum", "amount");
+  const spilled = run(df);
+  assert.equal(spilled.memory.spilled, true);
+
+  resetSettings();
+  applySetting("executor.mb", "32");
+  const ok = run(df);
+  assert.equal(ok.memory.spilled, false);
+
+  applySetting("broadcast.threshold", "10");
+  let j = createSource("sales");
+  j = join(j, "users", "user_id", "inner", "auto");
+  assert.ok(run(j).physical.indexOf("BroadcastHashJoin") !== -1);
+
+  applySetting("broadcast.threshold", "0");
+  applySetting("autobroadcast", "off");
+  j = createSource("sales");
+  j = join(j, "users", "user_id", "inner", "auto");
+  assert.ok(run(j).physical.indexOf("SortMergeJoin") !== -1);
+  resetSettings();
+});
+
+test("multi-agg and cube produce grouping sets", async () => {
+  const { groupByMulti, cubeRollup, salt, mapExplode, mlOp } = await import("../src/engine/plan.js");
+  let df = createSource("sales");
+  df = groupByMulti(df, ["region"], [
+    { fn: "sum", col: "amount" },
+    { fn: "count", col: null },
+  ]);
+  const multi = run(df);
+  assert.equal(multi.rows.length, 4);
+  assert.ok(multi.rows[0]["count(*)"] === 1 || multi.rows[0]["count(*)"] > 0);
+
+  let c = createSource("sales");
+  c = cubeRollup(c, ["region"], "cube", "sum", "amount");
+  const cube = run(c);
+  assert.ok(cube.rows.length > 4);
+
+  let s = createSource("sales");
+  s = salt(s, "user_id", 4);
+  assert.ok(run(s).physical.indexOf("AddSaltKey") !== -1);
+
+  let e = createSource("events");
+  e = mapExplode(e, "tags");
+  assert.ok(run(e).rows.some((r) => r.map_key === "mobile"));
+
+  let m = createSource("sales");
+  m = mlOp(m, "fit", { target: "amount" });
+  const fit = run(m);
+  assert.ok(fit.rows[0].prediction > 0);
+});
+
+test("udf modes change cost and physical tags", async () => {
+  const { applySetting, resetSettings } = await import("../src/engine/settings.js");
+  const { udf } = await import("../src/engine/plan.js");
+  resetSettings();
+  let df = createSource("sales");
+  df = udf(df, "tax", "amount");
+  applySetting("udf.mode", "python");
+  const py = run(df);
+  assert.ok(py.physical.indexOf("python-udf") !== -1);
+  applySetting("udf.mode", "jvm");
+  const jvm = run(df);
+  assert.ok(jvm.computeCost < py.computeCost);
+  resetSettings();
+});
+
+test("injectFail records retries; speculate reduces them", async () => {
+  const { applySetting, resetSettings } = await import("../src/engine/settings.js");
+  const { injectFailure } = await import("../src/engine/plan.js");
+  resetSettings();
+  let df = createSource("sales");
+  df = injectFailure(df, 0);
+  const a = run(df);
+  assert.equal(a.retries, 2);
+  applySetting("speculate", "on");
+  let df2 = createSource("sales");
+  df2 = injectFailure(df2, 0);
+  assert.equal(run(df2).retries, 1);
+  resetSettings();
+});
