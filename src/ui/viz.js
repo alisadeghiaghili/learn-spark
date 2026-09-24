@@ -249,3 +249,54 @@ export function renderPreview(partsEl, metaEl, state) {
     partsEl.appendChild(wrap);
   }
 }
+
+
+/**
+ * Render driver + executors + task slots.
+ *
+ * @param {HTMLElement} root
+ * @param {any} state
+ * @returns {void}
+ */
+export function renderCluster(root, state) {
+  if (!root) return;
+  const result = state.lastRun;
+  const parts = result ? result.partitions : (state.df ? state.df.partitions : 2);
+  const shape = result && result.cluster ? result.cluster : { executors: 1, slots: 2 };
+  const mem = result ? result.memory : null;
+  const retries = result ? result.retries || 0 : 0;
+
+  root.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "cluster-row";
+
+  const driver = document.createElement("div");
+  driver.className = "cluster-node driver";
+  driver.innerHTML = "<h4>Driver</h4><div>plan → stages → tasks</div>";
+  row.appendChild(driver);
+
+  for (let e = 0; e < shape.executors; e += 1) {
+    const ex = document.createElement("div");
+    ex.className = "cluster-node executor" + (mem && mem.spilled ? " spill" : "");
+    let slots = "";
+    for (let s = 0; s < shape.slots; s += 1) {
+      const busy = state.df ? "busy" : "idle";
+      slots += '<span class="slot ' + busy + '">task</span>';
+    }
+    ex.innerHTML =
+      "<h4>Executor " + e + "</h4><div>" + slots + "</div>" +
+      "<div class='par-note'>" + (mem ? mem.executorMb + "MB" : "–") +
+      (mem && mem.spilled ? " · SPILL " + mem.spillKb + "KB" : "") +
+      (retries ? " · retry" : "") + "</div>";
+    row.appendChild(ex);
+  }
+  root.appendChild(row);
+
+  const meta = document.createElement("div");
+  meta.className = "par-note";
+  meta.textContent =
+    parts + " partitions · " + shape.executors + " executors × " + shape.slots + " slots" +
+    (result && result.fromCache ? " · cache hit" : "") +
+    (result && result.lateDropped ? " · late dropped " + result.lateDropped : "");
+  root.appendChild(meta);
+}

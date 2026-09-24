@@ -86,6 +86,8 @@ export const DATASETS = {
       { id: 4, user_id: 3, event: "click", tags: "mobile", ts: "2024-02-02" },
       { id: 5, user_id: 4, event: "view", tags: "desktop,promo", ts: "2024-02-03" },
       { id: 6, user_id: 2, event: "click", tags: "promo", ts: "2024-02-03" },
+      { id: 7, user_id: 5, event: "purchase", tags: "mobile", ts: "2023-01-01" },
+      { id: 8, user_id: 6, event: "click", tags: "promo", ts: "2024-02-10" },
     ],
   },
   campaigns: {

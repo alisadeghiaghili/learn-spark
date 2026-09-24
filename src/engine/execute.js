@@ -26,6 +26,7 @@ export function materialize(plan) {
   let peakBytes = 0;
   let spilled = false;
   let cacheHits = 0;
+  let lateDropped = 0;
 
   for (let i = 0; i < spine.length; i += 1) {
     const node = spine[i];
@@ -70,6 +71,22 @@ export function materialize(plan) {
     }
   }
 
+  // Streaming late-data drop: if watermark set and a sort/ts plan exists, drop rows older than max-ts - lag.
+  if (settings.watermarkLag) {
+    const tsCol = rows.length && ("ts" in rows[0]) ? "ts" : ("eventTime" in rows[0] ? "eventTime" : null);
+    if (tsCol) {
+      let maxT = rows[0][tsCol];
+      for (let i = 0; i < rows.length; i += 1) {
+        if (String(rows[i][tsCol]) > String(maxT)) maxT = rows[i][tsCol];
+      }
+      const lagDays = parseLagDays(String(settings.watermarkLag));
+      const cutoff = shiftDate(String(maxT), -lagDays);
+      const before = rows.length;
+      rows = rows.filter(function (r) { return String(r[tsCol]) >= cutoff; });
+      lateDropped = before - rows.length;
+    }
+  }
+
   const columns = rows.length ? Object.keys(rows[0]) : inferColumns(spine);
   const memBudget = settings.executorMb * 1024 * 1024;
   const spilledBytes = spilled ? Math.max(1, Math.floor(peakBytes * 0.15)) : 0;
@@ -93,6 +110,7 @@ export function materialize(plan) {
     stages: stages.filter(function (s) { return s.ops.length > 0; }),
     memory: memory,
     physical: physicalPlan(spine),
+    lateDropped: lateDropped,
   };
 }
 
@@ -155,7 +173,11 @@ function physicalPlan(spine) {
     } else if (n.op === "ml") {
       lines.push("ML_" + n.args.stage + " " + n.label);
     } else if (n.op === "stream") {
-      lines.push("Stream_" + n.args.phase + " " + n.label);
+      lines.push("Stream_" + n.args.phase + " " + n.label + " outputMode=" + settings.outputMode + (settings.watermarkLag ? " watermark=" + settings.watermarkLag : ""));
+    } else if (n.op === "mlLinreg") {
+      lines.push("LinearRegression(fit) " + n.label + "  [NormalEquation]");
+    } else if (n.op === "mlPredict") {
+      lines.push("LinearRegressionModel.transform " + n.label);
     } else if (n.op === "fail") {
       lines.push("TaskFailureInjector " + n.label);
     } else if (n.op === "sort") {
@@ -325,6 +347,20 @@ function applyOp(node, rows) {
   if (node.op === "ml") {
     return applyMl(rows, node.args);
   }
+  if (node.op === "mlLinreg") {
+    // fit stores model on rows as columns; real fit is on full bag
+    const model = fitLinreg(rows, node.args);
+    return rows.map(function (r) {
+      const out = Object.assign({}, r);
+      out.model_w = model.w;
+      out.model_b = model.b;
+      out.model_rmse = model.rmse;
+      return out;
+    });
+  }
+  if (node.op === "mlPredict") {
+    return predictLinreg(rows, node.args);
+  }
   if (node.op === "stream") {
     return rows;
   }
@@ -416,7 +452,7 @@ function applyWindow(rows, args) {
     });
     for (let i = 0; i < bucket.length; i += 1) {
       const row = Object.assign({}, bucket[i]);
-      row[outCol] = windowValue(fn, i, values, bucket[i], col);
+      row[outCol] = windowValue(fn, i, values, bucket[i], col, args.frame);
       out.push(row);
     }
   }
@@ -431,7 +467,40 @@ function applyWindow(rows, args) {
  * @param {string|null} col
  * @returns {unknown}
  */
-function windowValue(fn, idx, values, row, col) {
+/**
+ * Resolve frame window indices.
+ *
+ * @param {string} frame
+ * @param {number} idx
+ * @param {number} len
+ * @returns {number[]}
+ */
+function frameSlice(frame, idx, len) {
+  const f = String(frame || "rows-unbounded-current");
+  if (f === "rows-unbounded-current" || f === "unbounded") {
+    return Array.from({ length: idx + 1 }, function (_v, i) { return i; });
+  }
+  if (f === "rows-unbounded-following" || f === "entire") {
+    return Array.from({ length: len }, function (_v, i) { return i; });
+  }
+  if (f === "rows-3-preceding-current" || f === "last4") {
+    const start = Math.max(0, idx - 3);
+    const out = [];
+    for (let i = start; i <= idx; i += 1) out.push(i);
+    return out;
+  }
+  if (f === "rows-current-only" || f === "current") {
+    return [idx];
+  }
+  if (f === "range-unbounded-current") {
+    return Array.from({ length: idx + 1 }, function (_v, i) { return i; });
+  }
+  return Array.from({ length: idx + 1 }, function (_v, i) { return i; });
+}
+
+function windowValue(fn, idx, values, row, col, frame) {
+  const win = frameSlice(frame, idx, values.length);
+  const inFrame = win.map(function (i) { return values[i]; });
   if (fn === "row_number") return idx + 1;
   if (fn === "rank") {
     const v = values[idx];
@@ -446,17 +515,18 @@ function windowValue(fn, idx, values, row, col) {
   }
   if (fn === "sum") {
     let s = 0;
-    for (let i = 0; i <= idx; i += 1) s += values[i];
+    for (let i = 0; i < inFrame.length; i += 1) s += inFrame[i];
     return s;
   }
   if (fn === "avg") {
+    if (!inFrame.length) return null;
     let s = 0;
-    for (let i = 0; i <= idx; i += 1) s += values[i];
-    return s / (idx + 1);
+    for (let i = 0; i < inFrame.length; i += 1) s += inFrame[i];
+    return s / inFrame.length;
   }
   if (fn === "min" || fn === "max") {
-    const slice = values.slice(0, idx + 1);
-    return fn === "min" ? Math.min.apply(null, slice) : Math.max.apply(null, slice);
+    if (!inFrame.length) return null;
+    return fn === "min" ? Math.min.apply(null, inFrame) : Math.max.apply(null, inFrame);
   }
   if (fn === "lag" || fn === "lead") {
     const at = fn === "lag" ? idx - 1 : idx + 1;
@@ -663,6 +733,63 @@ function applyMl(rows, args) {
 }
 
 /**
+ * Ordinary least squares on one feature (closed form).
+ *
+ * @param {Array} rows
+ * @param {any} args
+ * @returns {Array}
+ */
+export function fitLinreg(rows, args) {
+  const xCol = String(args.featureCol);
+  const yCol = String(args.targetCol);
+  const n = rows.length;
+  if (!n) return { w: 0, b: 0, rmse: 0 };
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  for (let i = 0; i < n; i += 1) {
+    const x = Number(rows[i][xCol]) || 0;
+    const y = Number(rows[i][yCol]) || 0;
+    sx += x;
+    sy += y;
+    sxx += x * x;
+    sxy += x * y;
+  }
+  const denom = n * sxx - sx * sx;
+  const w = denom === 0 ? 0 : (n * sxy - sx * sy) / denom;
+  const b = (sy - w * sx) / n;
+  let se = 0;
+  for (let i = 0; i < n; i += 1) {
+    const x = Number(rows[i][xCol]) || 0;
+    const y = Number(rows[i][yCol]) || 0;
+    const err = y - (w * x + b);
+    se += err * err;
+  }
+  return { w: w, b: b, rmse: Math.sqrt(se / n), featureCol: xCol, targetCol: yCol };
+}
+
+/**
+ * Apply fitted linear model.
+ *
+ * @param {Array} rows
+ * @param {any} args
+ * @returns {Array}
+ */
+export function predictLinreg(rows, args) {
+  const xCol = String(args.featureCol);
+  const w = Number(args.w);
+  const b = Number(args.b);
+  return rows.map(function (r) {
+    const out = Object.assign({}, r);
+    const x = Number(r[xCol]) || 0;
+    out.prediction = w * x + b;
+    out.residual = Number(r[args.targetCol] || 0) - out.prediction;
+    return out;
+  });
+}
+
+/**
  * @param {string} fn
  * @param {number[]} values
  * @returns {number}
@@ -692,6 +819,12 @@ export function run(df) {
   let fmtPenalty = 0;
   if (result.physical.indexOf("text parse") !== -1) fmtPenalty = 25;
   else if (result.physical.indexOf("ACID") !== -1) fmtPenalty = 2;
+  let storagePenalty = 0;
+  const sl = String(df.storageLevel || settings.storageLevel || "MEMORY_AND_DISK");
+  if (df.cached && sl === "DISK_ONLY") storagePenalty = 20;
+  else if (df.cached && sl === "MEMORY_ONLY_SER") storagePenalty = 8;
+  else if (df.cached && sl === "MEMORY_ONLY") storagePenalty = 3;
+  else if (df.cached) storagePenalty = 1;
   const failPenalty = result.physical.indexOf("TaskFailureInjector") !== -1
     ? (settings.speculate ? 15 : 55)
     : 0;
@@ -701,7 +834,8 @@ export function run(df) {
     (result.memory.spilled ? 40 : 0) +
     udfPenalty +
     fmtPenalty +
-    failPenalty;
+    failPenalty +
+    storagePenalty;
   const fromCache = Boolean(df.cached && df.cacheKey);
   const failed = result.physical.indexOf("TaskFailureInjector") !== -1;
   const retries = failed ? (settings.speculate ? 1 : 2) : 0;
@@ -714,6 +848,8 @@ export function run(df) {
     physical: result.physical,
     cluster: result.memory.cluster,
     retries: retries,
+    lateDropped: result.lateDropped || 0,
+    storageLevel: String(df.storageLevel || settings.storageLevel || "MEMORY_AND_DISK"),
     speculative: settings.speculate,
     computeCost: fromCache ? Math.floor(computeCost * 0.15) : computeCost,
     fromCache: fromCache,
@@ -731,4 +867,36 @@ export function partitionRows(rows, partitions) {
   for (let i = 0; i < n; i += 1) buckets.push([]);
   for (let i = 0; i < rows.length; i += 1) buckets[i % n].push(rows[i]);
   return buckets;
+}
+
+
+/**
+ * Parse lag like 10m / 2h / 1d to days (fractional).
+ *
+ * @param {string} lag
+ * @returns {number}
+ */
+function parseLagDays(lag) {
+  const m = String(lag).match(/^(\d+(?:\.\d+)?)([smhd])$/i);
+  if (!m) return Number(lag) || 0;
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  if (u === "s") return n / 86400;
+  if (u === "m") return n / 1440;
+  if (u === "h") return n / 24;
+  return n;
+}
+
+/**
+ * Shift ISO date by (possibly fractional) days.
+ *
+ * @param {string} iso
+ * @param {number} days
+ * @returns {string}
+ */
+function shiftDate(iso, days) {
+  const d = new Date(iso + "T00:00:00Z");
+  if (isNaN(d.getTime())) return iso;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }

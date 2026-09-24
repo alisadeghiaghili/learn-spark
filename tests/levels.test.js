@@ -67,6 +67,11 @@ const SOLUTIONS = {
   "lab-formats": ["set format csv", "load sales", "explain"],
   "lab-agg-mix": ["load sales", "groupBy region sum amount, count *", "show"],
   "lab-nested": ["load events", "mapExplode tags", "show"],
+  "lab-storage": ["load sales", "filter amount > 20", "cache DISK_ONLY", "show"],
+  "lab-frame": ["load sales", "set window.frame last4", "window sum amount over region ts last4", "show"],
+  "lab-late-drop": ["load events", "stream watermark 1d", "explain"],
+  "lab-linreg": ["load sales", "ml linreg user_id amount", "show"],
+  "lab-cluster": ["set tasks.per.executor 4", "load sales", "repartition 8", "show"],
 };
 
 test("every level has a known solution", () => {

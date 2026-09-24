@@ -14,6 +14,10 @@ export const settings = {
   format: "parquet",
   saltSkew: false,
   udfMode: "jvm",
+  storageLevel: "MEMORY_AND_DISK",
+  windowFrame: "rows-unbounded-current",
+  outputMode: "append",
+  watermarkLag: null,
 };
 
 /**
@@ -32,6 +36,10 @@ export function resetSettings() {
   settings.format = "parquet";
   settings.saltSkew = false;
   settings.udfMode = "jvm";
+  settings.storageLevel = "MEMORY_AND_DISK";
+  settings.windowFrame = "rows-unbounded-current";
+  settings.outputMode = "append";
+  settings.watermarkLag = null;
 }
 
 /**
@@ -80,6 +88,23 @@ export function applySetting(key, raw) {
     settings.saltSkew = v === "on" || v === "true" || v === "1";
     return "skew salt=" + settings.saltSkew;
   }
+  if (k === "storage.level" || k === "storagelevel") {
+    const lv = v.toUpperCase().replace(/-/g, "_");
+    const ok = ["MEMORY_ONLY", "MEMORY_AND_DISK", "MEMORY_ONLY_SER", "DISK_ONLY", "MEMORY_ONLY_2", "OFF_HEAP"];
+    if (ok.indexOf(lv) === -1) {
+      throw new Error("storage.level must be " + ok.join("|"));
+    }
+    settings.storageLevel = lv;
+    return "storageLevel=" + lv;
+  }
+  if (k === "window.frame" || k === "frame") {
+    settings.windowFrame = v || "rows-unbounded-current";
+    return "windowFrame=" + settings.windowFrame;
+  }
+  if (k === "outputmode") {
+    settings.outputMode = v || "append";
+    return "outputMode=" + settings.outputMode;
+  }
   if (k === "udf.mode") {
     const mode = v.toLowerCase();
     if (mode !== "native" && mode !== "jvm" && mode !== "python" && mode !== "pandas") {
@@ -108,6 +133,9 @@ export function describeSettings() {
     "format=" + settings.format,
     "salt=" + settings.saltSkew,
     "udf.mode=" + settings.udfMode,
+    "storage.level=" + settings.storageLevel,
+    "window.frame=" + settings.windowFrame,
+    "outputMode=" + settings.outputMode,
   ].join("  ");
 }
 

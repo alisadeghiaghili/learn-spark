@@ -285,12 +285,13 @@ export function sample(df, frac) {
  * @param {boolean} [desc]
  * @returns {any}
  */
-export function windowFn(df, fn, col, partitionBy, orderBy, desc) {
+export function windowFn(df, fn, col, partitionBy, orderBy, desc, frame) {
   const outCol = fn + "_over_" + (partitionBy.join("_") || "all");
+  const frameSpec = frame || "rows-unbounded-current";
   return withOp(
     df,
     "window",
-    "window(" + fn + "(" + (col || "*") + ") over " + (partitionBy.join(",") || "all") + " order " + orderBy + ")",
+    "window(" + fn + "(" + (col || "*") + ") over " + (partitionBy.join(",") || "all") + " order " + orderBy + " frame " + frameSpec + ")",
     {
       fn: fn,
       col: col,
@@ -298,6 +299,7 @@ export function windowFn(df, fn, col, partitionBy, orderBy, desc) {
       orderBy: orderBy,
       desc: Boolean(desc),
       outCol: outCol,
+      frame: frameSpec,
     }
   );
 }
@@ -334,12 +336,13 @@ export function udf(df, name, col) {
  * @param {any} df
  * @returns {any}
  */
-export function cacheFrame(df) {
+export function cacheFrame(df, storageLevel) {
   return Object.assign({}, df, {
     id: nextId("df"),
     plan: clonePlan(df.plan),
     cached: true,
     cacheKey: df.id,
+    storageLevel: storageLevel || "MEMORY_AND_DISK",
   });
 }
 
@@ -486,5 +489,40 @@ export function streamOp(df, phase, args) {
 export function injectFailure(df, taskIndex) {
   return withOp(df, "fail", "injectFail(task=" + (taskIndex || 0) + ")", {
     taskIndex: taskIndex || 0,
+  });
+}
+
+
+/**
+ * Linear regression Estimator: fit on feature col, predict target.
+ *
+ * @param {any} df
+ * @param {string} featureCol
+ * @param {string} targetCol
+ * @returns {any}
+ */
+export function mlLinreg(df, featureCol, targetCol) {
+  return withOp(df, "mlLinreg", "ml:linreg(" + featureCol + " -> " + targetCol + ")", {
+    featureCol: featureCol,
+    targetCol: targetCol,
+    stage: "fit",
+  }, { wide: true });
+}
+
+/**
+ * Apply a fitted linear model (Model.transform).
+ *
+ * @param {any} df
+ * @param {string} featureCol
+ * @param {number} w
+ * @param {number} b
+ * @returns {any}
+ */
+export function mlPredictLinreg(df, featureCol, w, b) {
+  return withOp(df, "mlPredict", "ml:predict(" + featureCol + ")", {
+    featureCol: featureCol,
+    w: w,
+    b: b,
+    stage: "predict",
   });
 }

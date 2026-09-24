@@ -245,3 +245,67 @@ test("injectFail records retries; speculate reduces them", async () => {
   assert.equal(run(df2).retries, 1);
   resetSettings();
 });
+
+
+test("window frame changes running sum", async () => {
+  const { windowFn } = await import("../src/engine/plan.js");
+  const { resetSettings } = await import("../src/engine/settings.js");
+  resetSettings();
+  let a = createSource("sales");
+  a = windowFn(a, "sum", "amount", ["region"], "ts", false, "rows-unbounded-current");
+  let b = createSource("sales");
+  b = windowFn(b, "sum", "amount", ["region"], "ts", false, "rows-current-only");
+  const ra = run(a);
+  const rb = run(b);
+  const col = Object.keys(ra.rows[0]).find((k) => k.indexOf("sum_over_") === 0);
+  // match rows by id — frames are compared per event, not per emission order
+  const byId = new Map(rb.rows.map((r) => [r.id, r]));
+  assert.ok(ra.rows.some((r) => r[col] !== byId.get(r.id)[col]));
+});
+
+test("watermark drops late rows", async () => {
+  const { streamOp } = await import("../src/engine/plan.js");
+  const { settings, resetSettings, applySetting } = await import("../src/engine/settings.js");
+  resetSettings();
+  let df = createSource("events");
+  df = streamOp(df, "watermark", { lag: "1d" });
+  settings.watermarkLag = "1d";
+  const result = run(df);
+  assert.ok(result.lateDropped >= 1, "lateDropped=" + result.lateDropped);
+  resetSettings();
+  let df2 = createSource("events");
+  assert.equal(run(df2).lateDropped, 0);
+});
+
+test("linreg fit learns slope and intercept", async () => {
+  const { mlLinreg, mlPredictLinreg } = await import("../src/engine/plan.js");
+  let df = createSource("sales");
+  df = mlLinreg(df, "user_id", "amount");
+  const fit = run(df);
+  assert.ok(typeof fit.rows[0].model_w === "number");
+  assert.ok(typeof fit.rows[0].model_rmse === "number");
+  const w = fit.rows[0].model_w;
+  const b = fit.rows[0].model_b;
+  let p = createSource("sales");
+  p = mlPredictLinreg(p, "user_id", w, b);
+  const pred = run(p);
+  assert.ok(pred.rows.every((r) => typeof r.prediction === "number"));
+});
+
+test("cache storage levels change cost", async () => {
+  const { cacheFrame, filter, createSource: src } = await import("../src/engine/plan.js");
+  // re-import createSource already in test scope
+  let df = createSource("sales");
+  df = filter(df, "amount > 1");
+  const disk = run(cacheFrame(df, "DISK_ONLY"));
+  const mem = run(cacheFrame(df, "MEMORY_AND_DISK"));
+  assert.ok(disk.computeCost >= mem.computeCost);
+});
+
+test("cluster shape scales with slots", async () => {
+  const { applySetting, resetSettings, clusterShape } = await import("../src/engine/settings.js");
+  resetSettings();
+  applySetting("tasks.per.executor", "4");
+  assert.deepEqual(clusterShape(8), { executors: 2, slots: 4 });
+  resetSettings();
+});

@@ -24,7 +24,9 @@ import {
   groupByMulti,
   injectFailure,
   mapExplode,
+  mlLinreg,
   mlOp,
+  mlPredictLinreg,
   salt,
   streamOp,
   udf,
@@ -32,7 +34,7 @@ import {
   windowFn,
   withColumn,
 } from "./plan.js";
-import { applySetting, describeSettings, resetSettings } from "./settings.js";
+import { applySetting, describeSettings, resetSettings, settings as getSettings } from "./settings.js";
 import { materialize, run as runFrame } from "./execute.js";
 import { listDatasets } from "./datasets.js";
 
@@ -53,8 +55,9 @@ const HELP_TEXT = [
   "  udf <upper|double|tax|prefix> <col>",
   "  salt <col> [n] | cube|rollup <keys> <fn> [col] | approx <col>",
   "  get <col> <field> | mapExplode <col>",
-  "  ml vectorize <a,b> | ml fit <target> | ml predict",
+  "  ml vectorize <a,b> | ml fit <target> | ml linreg <x> <y> | ml predict",
   "  stream emit | stream watermark <n> | injectFail | set [k v]",
+  "  cache [LEVEL] | persist [LEVEL] | window ... frame last4|entire|current",
   "  repartition <n> | coalesce <n>",
   "  cache | unpersist",
   "  show | count | schema | columns | explain | collect | write",
@@ -258,10 +261,15 @@ export function execute(state, line, ctx = {}) {
       outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (partition meta)" });
       return commit(state, command, "transform", nextDf, outputs);
     }
-    if (head === "cache") {
+    if (head === "cache" || head === "persist") {
       const df = requireDf(state);
-      const nextDf = cacheFrame(df);
-      outputs.push({ kind: "success", text: "Marked DataFrame as cached. Next actions reuse this result." });
+      const level = parts[1] ? String(parts[1]).toUpperCase().replace(/-/g, "_") : null;
+      if (level) applySetting("storage.level", level);
+      const nextDf = cacheFrame(df, level || undefined);
+      outputs.push({
+        kind: "success",
+        text: "Cached with " + (nextDf.storageLevel || "MEMORY_AND_DISK") + ". First action fills; later actions reuse.",
+      });
       return commit(state, command, "transform", nextDf, outputs);
     }
     if (head === "unpersist") {
@@ -323,7 +331,15 @@ export function execute(state, line, ctx = {}) {
       const partCol = right[0];
       const orderBy = right[1];
       const desc = (right[2] || "").toLowerCase() === "desc";
-      const nextDf = windowFn(df, fn, col, [partCol], orderBy, desc);
+      let frame = null;
+      // optional: rows between ... — accept shorthand after orderBy: last4|entire|current|rows-unbounded-current
+      const maybeFrame = right[3] || right[2];
+      if (maybeFrame && /^(rows-|range-|last4|entire|current|unbounded)/i.test(maybeFrame) &&
+          maybeFrame.toLowerCase() !== "desc") {
+        frame = maybeFrame;
+        applySetting("window.frame", frame);
+      }
+      const nextDf = windowFn(df, fn, col, [partCol], orderBy, desc, frame || undefined);
       outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (narrow window)" });
       return commit(state, command, "transform", nextDf, outputs);
     }
@@ -407,12 +423,26 @@ export function execute(state, line, ctx = {}) {
         outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (estimator.fit -> model)" });
         return commit(state, command, "transform", nextDf, outputs);
       }
+      if (stage === "linreg" || stage === "lr") {
+        // ml linreg <feature> <target>
+        const featureCol = requireArg(parts, 2, "usage: ml linreg <feature> <target>");
+        const targetCol = requireArg(parts, 3, "usage: ml linreg <feature> <target>");
+        const nextDf = mlLinreg(df, featureCol, targetCol);
+        outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (Estimator.fit OLS)" });
+        return commit(state, command, "transform", nextDf, outputs);
+      }
       if (stage === "predict") {
+        // ml predict <feature> <w> <b>   OR generic
+        if (parts.length >= 5) {
+          const nextDf = mlPredictLinreg(df, parts[2], Number(parts[3]), Number(parts[4]));
+          outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (Model.transform)" });
+          return commit(state, command, "transform", nextDf, outputs);
+        }
         const nextDf = mlOp(df, "predict", { intercept: 1 });
         outputs.push({ kind: "success", text: "+ " + planTip(nextDf) + "  (model.transform)" });
         return commit(state, command, "transform", nextDf, outputs);
       }
-      throw new Error("usage: ml vectorize <a,b> | ml fit <target> | ml predict");
+      throw new Error("usage: ml vectorize <a,b> | ml fit <target> | ml linreg <feat> <y> | ml predict ...");
     }
     if (head === "stream") {
       const sub = requireArg(parts, 1, "usage: stream emit | stream watermark <n>");
@@ -439,9 +469,13 @@ export function execute(state, line, ctx = {}) {
         const df = requireDf(state);
         const lag = requireArg(parts, 2, "usage: stream watermark <n>   e.g. stream watermark 10m");
         const nodeDf = streamOp(df, "watermark", { lag: lag });
+        applySetting("outputmode", "append");
+        // persist lag on settings
+        const st = getSettings;
+        st.watermarkLag = lag;
         outputs.push({
           kind: "success",
-          text: "watermark(eventTime, " + lag + ") — state bounded; rows later than max- lag are dropped.",
+          text: "watermark(eventTime, " + lag + ") — late rows (ts < max-lag) drop on materialize. outputMode=" + st.outputMode,
         });
         return commit(state, command, "transform", nodeDf, outputs);
       }
@@ -615,6 +649,7 @@ function explainText(df, result) {
     "\n\n== Memory ==\n  executor=" + (mem.executorMb || "?") + "MB peakKb=" + (mem.peakKb || 0) +
     " spillKb=" + (mem.spillKb || 0) + (mem.spilled ? " [SPILLED]" : "") +
     " cluster=" + (mem.cluster ? mem.cluster.executors + " executors x " + mem.cluster.slots + " slots" : "?") +
+    "\n== Stream ==\n  lateDropped=" + (result.lateDropped || 0) + " watermark=" + (getSettings.watermarkLag || "off") + " outputMode=" + getSettings.outputMode +
     "\n== Settings ==\n  " + describeSettings() +
     "\n\nrows=" + result.rows.length + " partitions=" + result.partitions + " cost=" + result.computeCost;
 }
