@@ -72,6 +72,9 @@ const SOLUTIONS = {
   "lab-late-drop": ["load events", "stream watermark 1d", "explain"],
   "lab-linreg": ["load sales", "ml linreg user_id amount", "show"],
   "lab-cluster": ["set tasks.per.executor 4", "load sales", "repartition 8", "show"],
+  "lab-catalyst": ["load sales", "filter amount > 1", "filter amount > 1", "select region, amount", "explain"],
+  "lab-stream-state": ["set outputmode update", "load events", "stream emit", "explain"],
+  "lab-ml-pipeline": ["load sales", "ml pipeline user_id amount"],
 };
 
 test("every level has a known solution", () => {

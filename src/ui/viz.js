@@ -300,3 +300,68 @@ export function renderCluster(root, state) {
     (result && result.lateDropped ? " · late dropped " + result.lateDropped : "");
   root.appendChild(meta);
 }
+
+
+/**
+ * Stage/task timeline (Spark UI Jobs tab shape).
+ *
+ * @param {HTMLElement} root
+ * @param {any} state
+ * @returns {void}
+ */
+export function renderTimeline(root, state) {
+  if (!root) return;
+  root.innerHTML = "";
+  const result = state.lastRun;
+  if (!result) {
+    root.innerHTML = '<div class="par-note">No job yet — run an action.</div>';
+    return;
+  }
+  const stages = result.stages || [];
+  const retries = result.retries || 0;
+  const cg = result.codegen || {};
+  const opt = (result.optimizer && result.optimizer.trace) || [];
+
+  const head = document.createElement("div");
+  head.className = "par-note";
+  head.textContent =
+    "stages=" + stages.length +
+    " · codegen segments=" + (cg.segments || 0) + " splits=" + (cg.splits || 0) +
+    " · retries=" + retries +
+    (result.speculative ? " · speculation" : "") +
+    " · optimizer rules=" + opt.length;
+  root.appendChild(head);
+
+  const wrap = document.createElement("div");
+  wrap.className = "timeline";
+  for (let i = 0; i < stages.length; i += 1) {
+    const s = stages[i];
+    const row = document.createElement("div");
+    row.className = "timeline-row" + (s.wide ? " wide" : "");
+    const label = document.createElement("div");
+    label.className = "timeline-label";
+    label.textContent = "Stage " + i + (s.wide ? " shuffle" : " map");
+    const bar = document.createElement("div");
+    bar.className = "timeline-bar";
+    bar.style.width = Math.min(100, 12 + s.ops.length * 18) + "%";
+    if (retries && i === stages.length - 1) {
+      bar.classList.add("retry");
+      bar.textContent = retries + " attempt" + (retries > 1 ? "s" : "");
+    }
+    const ops = document.createElement("div");
+    ops.className = "par-note";
+    ops.textContent = s.ops.join(" → ");
+    row.appendChild(label);
+    row.appendChild(bar);
+    row.appendChild(ops);
+    wrap.appendChild(row);
+  }
+  root.appendChild(wrap);
+
+  if (opt.length) {
+    const rules = document.createElement("div");
+    rules.className = "par-note";
+    rules.textContent = opt.map(function (x) { return x.rule; }).join(", ");
+    root.appendChild(rules);
+  }
+}

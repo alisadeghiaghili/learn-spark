@@ -373,3 +373,91 @@ test("sql parser builds real AST", async () => {
   assert.equal(ast.orderBy.desc, true);
   assert.throws(function () { parseSelect("select from"); });
 });
+
+
+test("optimizer collapses filters and records rules", async () => {
+  const { optimize, foldConstants, formatPlan } = await import("../src/engine/optimizer.js");
+  const { createSource, filter, select } = await import("../src/engine/plan.js");
+  let df = createSource("sales");
+  df = filter(df, "amount > 1 && 1 == 1");
+  df = filter(df, "amount > 1");
+  df = select(df, ["region", "amount"]);
+  const res = optimize(df.plan, ["id", "user_id", "amount", "region"]);
+  assert.ok(res.trace.some((x) => x.rule === "CollapseFilters" || x.rule === "ConstantFolding"));
+  assert.ok(formatPlan(res.plan).indexOf("filter") !== -1);
+  assert.equal(foldConstants("1 == 1 && amount > 1"), "amount > 1");
+});
+
+test("streaming append vs update emission differs", async () => {
+  const { StreamState } = await import("../src/engine/streaming.js");
+  const events = [
+    { id: "1", key: "a", eventTime: "2024-01-01", value: 1 },
+    { id: "2", key: "a", eventTime: "2024-01-02", value: 2 },
+    { id: "3", key: "b", eventTime: "2024-01-03", value: 5 },
+  ];
+  const s1 = new StreamState({ outputMode: "append" });
+  const b1 = s1.microBatch(events);
+  assert.equal(b1.emitted.length, 2, "append emits each key once");
+  const s2 = new StreamState({ outputMode: "update" });
+  s2.microBatch(events);
+  const b2 = s2.microBatch([
+    { id: "4", key: "a", eventTime: "2024-01-04", value: 10 },
+  ]);
+  assert.ok(b2.emitted.length >= 1);
+  const s3 = new StreamState({ outputMode: "complete", watermarkLagDays: 3650 });
+  const b3 = s3.microBatch(events);
+  assert.equal(b3.emitted.length, 2);
+});
+
+test("streaming watermark drops and evicts late state", async () => {
+  const { StreamState } = await import("../src/engine/streaming.js");
+  const s = new StreamState({ outputMode: "update", watermarkLagDays: 1 });
+  const b1 = s.microBatch([
+    { id: "1", key: "old", eventTime: "2023-01-01", value: 1 },
+    { id: "2", key: "new", eventTime: "2024-06-01", value: 2 },
+  ]);
+  assert.ok(b1.lateDropped === 0 || b1.stateKeys >= 1);
+  const b2 = s.microBatch([
+    { id: "3", key: "late", eventTime: "2023-01-02", value: 9 },
+  ]);
+  assert.ok(b2.lateDropped >= 1);
+  assert.ok(b2.watermark);
+});
+
+test("ml pipeline fit/transform and metrics", async () => {
+  const { Pipeline, fitLinreg, trainTestSplit, regressionMetrics, predictLinreg } = await import("../src/engine/ml.js");
+  const rows = [];
+  for (let i = 0; i < 20; i += 1) rows.push({ user_id: i, amount: 2 * i + 1 });
+  const split = trainTestSplit(rows, 0.25);
+  assert.ok(split.train.length > split.test.length);
+  const pipe = new Pipeline()
+    .addTransformer("features", function (rs) {
+      return rs.map(function (r) {
+        return Object.assign({}, r, { features: r.user_id });
+      });
+    })
+    .addEstimator("linreg", function (rs) {
+      return fitLinreg(rs, "features", "amount");
+    });
+  const fitted = pipe.fit(split.train);
+  assert.ok(Math.abs(fitted.model.w - 2) < 0.2);
+  const scored = pipe.transform(split.test);
+  const m = regressionMetrics(scored, "amount", "prediction");
+  assert.ok(m.rmse < 1.5);
+  assert.ok(predictLinreg(rows, fitted.model)[0].prediction !== undefined);
+});
+
+test("explain exposes optimizer trace and codegen", async () => {
+  const { execute, createState } = await import("../src/engine/commands.js");
+  let s = createState();
+  s = execute(s, "load sales", {}).state;
+  s = execute(s, "filter amount > 1", {}).state;
+  s = execute(s, "filter region == west", {}).state;
+  const r = execute(s, "explain", {});
+  assert.equal(r.ok, true);
+  const text = r.outputs.map((o) => o.text || "").join("\n");
+  assert.ok(text.indexOf("Optimized Logical Plan") !== -1);
+  assert.ok(text.indexOf("Catalyst Rules") !== -1);
+  assert.ok(text.indexOf("Whole-Stage Codegen") !== -1);
+  assert.ok(r.state.lastRun.optimizer.trace.length >= 1);
+});

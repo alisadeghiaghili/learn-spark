@@ -694,3 +694,39 @@ table.grid td {
   border-color: var(--partition);
   color: var(--partition);
 }
+
+
+/* Stage timeline */
+.timeline { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.timeline-row {
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.timeline-row.wide { border-color: var(--stage); }
+.timeline-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.timeline-bar {
+  height: 8px;
+  margin: 4px 0;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--partition), var(--accent));
+  min-width: 12px;
+}
+.timeline-bar.retry {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--danger),
+    var(--danger) 6px,
+    #7a2b28 6px,
+    #7a2b28 12px
+  );
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 8px;
+}

@@ -5,7 +5,7 @@
 import { execute, createState } from "../engine/commands.js";
 import { run } from "../engine/execute.js";
 import { SEQUENCES, LEVELS, allLevels, checkGoals, getNextLevel } from "../game/levels.js";
-import { renderDag, renderPreview, renderCluster } from "./viz.js";
+import { renderDag, renderPreview, renderCluster, renderTimeline } from "./viz.js";
 import { TerminalView } from "./terminal.js";
 import {
   loadProgress,
@@ -108,6 +108,7 @@ function render(opts) {
   renderDag(els.dagRoot, game.state.df, { animate: Boolean(opts.animate) });
   renderPreview(els.parts, els.partMeta, game.state);
   renderCluster(document.getElementById("cluster-panel"), game.state);
+  renderTimeline(document.getElementById("timeline-panel"), game.state);
 
   els.stCmds.textContent = String((game.state.commandsRun || []).length);
   els.stActions.textContent = String(game.state.actionsRun || 0);

@@ -10,6 +10,7 @@ import { budgetBytes, hashAggWithSpill, measure, rowBytes, sortWithSpill } from 
 import { joinWith } from "./joins.js";
 import { place } from "./partitions.js";
 import { analyzeCodegen } from "./codegen.js";
+import { optimize, formatPlan, spine as optSpine } from "./optimizer.js";
 
 /** Spill counters shared with aggregate() (reset per materialize). */
 let groupSpillFiles = 0;
@@ -883,6 +884,9 @@ function reduceAgg(fn, values) {
 export function run(df) {
   const result = materialize(df.plan);
   const cg = analyzeCodegen(planSpine(df.plan), settings.udfMode);
+  const opt = optimize(df.plan, result.columns);
+  const optPlanText = formatPlan(opt.plan);
+  const optTrace = opt.trace;
   let udfPenalty = 0;
   if (result.physical.indexOf("python-udf") !== -1) udfPenalty = 80;
   else if (result.physical.indexOf("jvm-udf") !== -1) udfPenalty = 35;
@@ -923,6 +927,10 @@ export function run(df) {
       cost: cg.cost,
       generated: cg.generated,
       unfusedOps: cg.unfusedOps,
+    },
+    optimizer: {
+      trace: optTrace,
+      optimized: optPlanText,
     },
     join: result.join || null,
     cluster: result.memory.cluster,
